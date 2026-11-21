@@ -1,12 +1,15 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.models import User, Vendor
 from app.schemas.schemas import LoginRequest, RegisterRequest, Token, UserResponse
-from app.core.security import verify_password, get_password_hash, create_access_token, decode_token, oauth2_scheme, get_current_user
+from app.core.security import verify_password, get_password_hash, create_access_token, require_role
 from app.services.validation.validators import validate_entity_name, validate_gstin, validate_pan, validate_udyam, validate_phone
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+logger = logging.getLogger(__name__)
 
 @router.post("/login", response_model=Token)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
@@ -17,6 +20,8 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password", headers={"WWW-Authenticate": "Bearer"})
     token = create_access_token(subject=user.id)
     return {
         "access_token": token,
@@ -106,9 +111,10 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         db.add(user)
         db.commit()
         db.refresh(user)
-    except Exception as e:
+    except Exception:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Registration failed: {str(e)}")
+        logger.exception("Bidder registration failed")
+        raise HTTPException(status_code=500, detail="Registration failed. Please try again.")
 
     token = create_access_token(subject=user.id)
     return {
@@ -124,7 +130,7 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     }
 
 @router.get("/me", response_model=UserResponse)
-def get_current_user_details(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_current_user_details(current_user: User = Depends(require_role("bidder", "officer", "admin")), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == current_user.id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")

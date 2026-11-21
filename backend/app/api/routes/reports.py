@@ -5,15 +5,17 @@ from app.db.database import get_db
 from app.models.models import Bid, Document, Verification, RuleResult, CrossCheck, ReviewDecision, User
 from app.services.report.pdf_generator import PDFReportGenerator
 from app.core.config import settings
-from app.core.security import get_current_user
+from app.core.security import require_role
 
 router = APIRouter(prefix="/reports", tags=["PDF Reports"])
 
 @router.get("/bids/{bid_id_or_code}")
-def download_bid_report(bid_id_or_code: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def download_bid_report(bid_id_or_code: str, db: Session = Depends(get_db), current_user: User = Depends(require_role("bidder", "officer", "admin"))):
     bid = db.query(Bid).filter((Bid.id == bid_id_or_code) | (Bid.bid_id == bid_id_or_code)).first()
     if not bid:
         raise HTTPException(status_code=404, detail="Bid not found")
+    if current_user.role == "BIDDER" and bid.vendor_id != current_user.vendor_id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this bid report")
 
     # Load persisted document records directly from database
     docs = []

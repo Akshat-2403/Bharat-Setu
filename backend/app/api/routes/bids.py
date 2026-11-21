@@ -1,10 +1,12 @@
-import os
 import random
+import uuid
+import mimetypes
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks, Query, Form
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse, Response
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.models import (
@@ -12,8 +14,8 @@ from app.models.models import (
     RuleResult, CrossCheck, RiskAssessment, AuditEvent, User, Notification
 )
 from app.schemas.schemas import BidCreate, BidResponse, DocumentResponse, DocumentListResponse
-from app.core.config import settings, BASE_DIR
-from app.core.security import get_current_user
+from app.core.config import settings
+from app.core.security import get_current_user, require_role
 from app.core.tender_rules import MIN_TENDER_VALUE_INR, format_inr, tender_value_is_eligible
 from app.services.ocr.ocr_service import OCRService
 from app.services.classification.classifier import DocumentClassifier
@@ -22,7 +24,11 @@ from app.services.cross_check.cross_check_engine import CrossCheckEngine
 from app.services.compliance.rule_engine import ComplianceRuleEngine
 from app.services.risk.risk_engine import RiskEngine
 from app.services.ai.explanation_engine import AIExplanationEngine
+from app.services.ai_provider import (
+    GeminiAIProvider, GeminiProviderError, extracted_fields_for_document,
+)
 from app.services.audit.audit_logger import AuditLogger
+from app.services.storage import get_storage_backend, validate_upload
 from app.services.validation.validators import (
     compare_names,
     parse_bid_amount,
@@ -40,14 +46,80 @@ from app.providers.government.base import (
 from app.services.notifications.notification_service import notify_bid_event
 
 router = APIRouter(prefix="/bids", tags=["Bids"])
+logger = logging.getLogger(__name__)
+
+
+def _extract_with_gemini(db: Session, document: Document, mime_type: str):
+    stored_bytes = get_storage_backend().download_bytes(document.storage_key)
+    result = GeminiAIProvider().extract_document(
+        stored_bytes, mime_type, document.document_type if document.document_type != "OTHER" else None
+    )
+    document.document_type = document.document_type if document.document_type != "OTHER" else result.document_type.strip().upper()
+    document.extracted_text = None
+    document.ocr_confidence = result.confidence_score
+    document.source = f"Gemini ({settings.GEMINI_MODEL})"
+    db.query(ExtractedField).filter(ExtractedField.document_id == document.id).delete(synchronize_session=False)
+    fields = extracted_fields_for_document(result)
+    for field in fields:
+        db.add(ExtractedField(document_id=document.id, **field))
+    document.document_status = "UPLOADED"
+    document.verification_status = "PENDING"
+    document.detail = f"Gemini extracted {len(fields)} structured fields ({result.confidence_score:.0f}% confidence)."
+    return result
+
+
+def _mark_ai_processing_failed(db: Session, bid: Bid, reason: str) -> None:
+    safe_reason = reason[:1000]
+    bid.status = "PROCESSING_FAILED"
+    bid.ai_assessment = None
+    bid.ai_recommendation = "AI processing did not complete. Retry verification; an officer must review the result."
+    bid.ai_summary = f"Processing failed: {safe_reason}"
+    for document in bid.documents:
+        document.document_status = "PROCESSING_FAILED"
+        document.verification_status = "PROCESSING_FAILED"
+        document.detail = safe_reason
+    db.commit()
+
+
+def _gemini_rule_results(assessment) -> list[dict]:
+    results = []
+    for index, item in enumerate(assessment.requirements, start=1):
+        finding = item.finding
+        if item.evidence_quote:
+            finding = f"{finding} Evidence: \"{item.evidence_quote}\""
+        results.append({
+            "rule_id": f"GEMINI_REQUIREMENT_{index:03d}",
+            "document_type": (item.document_type or "GENERAL").upper(),
+            "result": item.status,
+            "finding": finding,
+            "impact": "HIGH" if item.status == "FAIL" else "MEDIUM" if item.status == "WARNING" else "LOW",
+            "recommended_action": item.recommended_action or "Officer review as appropriate.",
+        })
+    return results
 
 def execute_bid_verification_pipeline(bid_id: str, db: Session):
     bid = db.query(Bid).filter(Bid.id == bid_id).first()
     if not bid:
         return
 
+    if settings.LLM_PROVIDER == "gemini":
+        for document in bid.documents:
+            if document.document_status == "PROCESSING_FAILED" and not document.extracted_fields:
+                mime_type = mimetypes.guess_type(document.filename)[0] or "application/octet-stream"
+                try:
+                    _extract_with_gemini(db, document, mime_type)
+                except GeminiProviderError as exc:
+                    _mark_ai_processing_failed(db, bid, str(exc))
+                    return
+                except Exception:
+                    _mark_ai_processing_failed(db, bid, "Stored document could not be read or parsed. Retry verification.")
+                    return
+        db.commit()
+
     # Update processing state
     bid.status = "PROCESSING"
+    bid.ai_assessment = None
+    bid.ai_summary = "Document and compliance analysis is in progress."
     db.commit()
 
     AuditLogger.log_event(db, "VERIFICATION_STARTED", "Verification Engine", "Started automated verification pipeline", bid_id=bid.id, vendor_name=bid.vendor.name if bid.vendor else "", status="checking")
@@ -272,9 +344,49 @@ def execute_bid_verification_pipeline(bid_id: str, db: Session):
         "minimum_experience_years": tender.minimum_experience_years if tender else 0
     }
 
-    rule_results_list = ComplianceRuleEngine.evaluate_tender_rules(
-        tender_data_dict, extracted_fields_map, doc_verifications, cross_checks, uploaded_doc_types
-    )
+    ai_assessment = None
+    if settings.LLM_PROVIDER == "gemini":
+        try:
+            ai_documents = []
+            storage = get_storage_backend()
+            for document in bid.documents:
+                mime_type = mimetypes.guess_type(document.filename)[0] or "application/octet-stream"
+                ai_documents.append({
+                    "filename": document.filename,
+                    "mime_type": mime_type,
+                    "bytes": storage.download_bytes(document.storage_key),
+                    "fields": {field.field_name: field.field_value for field in document.extracted_fields},
+                })
+            tender_payload = {
+                "title": tender.title if tender else "",
+                "requirements": [
+                    {"document_type": item.document_type, "mandatory": item.is_mandatory, "description": item.description}
+                    for item in tender_reqs
+                ],
+                "minimum_turnover_inr": tender.minimum_turnover_inr if tender else 0,
+                "minimum_experience_years": tender.minimum_experience_years if tender else 0,
+            }
+            vendor_payload = {
+                "name": vendor.name if vendor else "",
+                "pan": vendor.pan if vendor else None,
+                "gstin": vendor.gstin if vendor else None,
+                "extracted_fields": extracted_fields_map,
+            }
+            ai_assessment = GeminiAIProvider().assess_compliance(
+                tender_payload, ai_documents, vendor_payload, doc_verifications
+            )
+            rule_results_list = _gemini_rule_results(ai_assessment)
+        except GeminiProviderError as exc:
+            _mark_ai_processing_failed(db, bid, str(exc))
+            return
+        except Exception:
+            logger.exception("Could not prepare Gemini compliance assessment for bid %s", bid.id)
+            _mark_ai_processing_failed(db, bid, "Documents or tender data could not be prepared for Gemini assessment.")
+            return
+    else:
+        rule_results_list = ComplianceRuleEngine.evaluate_tender_rules(
+            tender_data_dict, extracted_fields_map, doc_verifications, cross_checks, uploaded_doc_types
+        )
 
     for rr in rule_results_list:
         db_rr = RuleResult(
@@ -294,14 +406,33 @@ def execute_bid_verification_pipeline(bid_id: str, db: Session):
         db.add(db_rr)
 
     # 6. Calculate Risk and Compliance Scores
-    risk_score, risk_level, compliance_score, risk_factors = RiskEngine.calculate_scores(
-        rule_results_list, doc_checks, cross_checks
-    )
+    if ai_assessment is not None:
+        risk_score = ai_assessment.risk_score
+        risk_level = "LOW" if risk_score <= 25 else "MEDIUM" if risk_score <= 60 else "HIGH"
+        total_assessed = len(ai_assessment.requirements)
+        compliance_points = sum(
+            1.0 if item.status == "PASS" else 0.5 if item.status == "WARNING" else 0.0
+            for item in ai_assessment.requirements
+        )
+        compliance_score = round(compliance_points / total_assessed * 100, 1) if total_assessed else 0.0
+        risk_factors = [item.finding for item in ai_assessment.requirements if item.status in {"FAIL", "WARNING"}]
+        risk_factors.extend(item.description for item in ai_assessment.discrepancies)
+        risk_factors = list(dict.fromkeys(risk_factors))
+    else:
+        risk_score, risk_level, compliance_score, risk_factors = RiskEngine.calculate_scores(
+            rule_results_list, doc_checks, cross_checks
+        )
 
     # 7. Generate Explainable AI Summary (strictly fact-grounded)
-    rec, summary, confidence = AIExplanationEngine.generate_explanation(
-        vendor_name, risk_level, risk_score, compliance_score, risk_factors, doc_checks
-    )
+    if ai_assessment is not None:
+        rec = "AI compliance analysis is complete. An authorized procurement officer must review the evidence and make the final decision."
+        summary = ai_assessment.officer_review_summary
+        confidence_values = [doc.ocr_confidence for doc in bid.documents if doc.ocr_confidence is not None]
+        confidence = round(sum(confidence_values) / len(confidence_values)) if confidence_values else 0
+    else:
+        rec, summary, confidence = AIExplanationEngine.generate_explanation(
+            vendor_name, risk_level, risk_score, compliance_score, risk_factors, doc_checks
+        )
 
     # Persist RiskAssessment
     risk_assess = RiskAssessment(
@@ -320,6 +451,7 @@ def execute_bid_verification_pipeline(bid_id: str, db: Session):
     bid.ai_confidence = confidence
     bid.ai_recommendation = rec
     bid.ai_summary = summary
+    bid.ai_assessment = ai_assessment.model_dump(mode="json") if ai_assessment is not None else None
     bid.status = "FLAGGED" if risk_level == "HIGH" else "PENDING_REVIEW"
 
     db.commit()
@@ -374,7 +506,7 @@ def list_bids(
     status_filter: Optional[str] = Query(None),
     risk_filter: Optional[str] = Query(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_role("bidder", "officer", "admin"))
 ):
     query = db.query(Bid).join(Tender, Bid.tender_id == Tender.id)
     if current_user.role == "BIDDER":
@@ -419,7 +551,12 @@ def list_bids(
                 "document_type": d.document_type,
                 "status": d.document_status.lower(),
                 "source": d.source or "Uploaded Document",
-                "detail": d.detail or f"{d.filename} processed."
+                "detail": d.detail or f"{d.filename} processed.",
+                "extracted_fields": [
+                    {"field_name": field.field_name, "field_value": field.field_value,
+                     "confidence": field.confidence, "validation_status": field.validation_status}
+                    for field in d.extracted_fields
+                ],
             })
 
         # Load persisted audit entries
@@ -447,6 +584,7 @@ def list_bids(
             "aiConfidence": b.ai_confidence,
             "aiRecommendation": b.ai_recommendation or "Awaiting verification pipeline execution.",
             "aiSummary": b.ai_summary or "New bid submission registered.",
+            "ai_assessment": b.ai_assessment,
             "documents": docs,
             "audit_trail": audit_entries,
             "officer": b.reviewed_by,
@@ -466,7 +604,7 @@ def list_bids(
 @router.post("", response_model=BidResponse)
 def create_bid(
     payload: BidCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("bidder", "officer", "admin")),
     db: Session = Depends(get_db)
 ):
     tender = db.query(Tender).filter((Tender.id == payload.tender_id) | (Tender.tender_id == payload.tender_id)).first()
@@ -605,7 +743,7 @@ def upload_document(
     bid_id_or_code: str,
     file: UploadFile = File(...),
     document_type: Optional[str] = Form(None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("bidder")),
     db: Session = Depends(get_db)
 ):
     bid = db.query(Bid).filter((Bid.id == bid_id_or_code) | (Bid.bid_id == bid_id_or_code)).first()
@@ -632,43 +770,9 @@ def upload_document(
             )
 
     # AUDIT ITEM 13: File validation (extension and size)
-    ext = os.path.splitext(file.filename)[1].lower()
-    if ext not in settings.ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"File extension '{ext}' not allowed. Permitted: {settings.ALLOWED_EXTENSIONS}")
-
-    file_bytes = file.file.read()
-    if not file_bytes:
-        raise HTTPException(status_code=400, detail="Uploaded document is empty.")
-    if len(file_bytes) > settings.MAX_FILE_SIZE_BYTES:
-        raise HTTPException(status_code=400, detail=f"File size exceeds limit ({settings.MAX_FILE_SIZE_BYTES / (1024*1024):.1f}MB)")
-
-    # MIME magic-bytes validation: reject files whose binary header does not
-    # match their declared extension. Prevents extension-spoofing attacks.
-    _MAGIC_BYTES = {
-        ".pdf": [(0, b"%PDF")],
-        ".png": [(0, b"\x89PNG")],
-        ".jpg": [(0, b"\xff\xd8\xff")],
-        ".jpeg": [(0, b"\xff\xd8\xff")],
-    }
-    expected_mime_types = {
-        ".pdf": "application/pdf",
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-    }
-    if file.content_type and file.content_type.lower() != expected_mime_types[ext]:
-        raise HTTPException(status_code=400, detail="Declared MIME type does not match the file extension.")
-    if ext in _MAGIC_BYTES:
-        header_checks = _MAGIC_BYTES[ext]
-        mime_ok = any(
-            file_bytes[offset:offset + len(magic)] == magic
-            for offset, magic in header_checks
-        )
-        if not mime_ok:
-            raise HTTPException(
-                status_code=400,
-                detail=f"File content does not match declared extension '{ext}'. Upload rejected."
-            )
+    original_filename = (file.filename or "").replace("\\", "/").split("/")[-1]
+    file_bytes = file.file.read(settings.MAX_FILE_SIZE_BYTES + 1)
+    ext, content_type = validate_upload(original_filename, file.content_type, file_bytes)
 
     file_hash = OCRService.calculate_sha256(file_bytes)
 
@@ -677,19 +781,76 @@ def upload_document(
     if existing_doc:
         raise HTTPException(status_code=400, detail="Duplicate document upload detected (matching SHA-256 file hash)")
 
-    safe_filename = os.path.basename(file.filename)
-    save_filename = f"{bid.bid_id}_{safe_filename}"
-    save_path = os.path.join(settings.UPLOAD_DIR, save_filename)
-    with open(save_path, "wb") as f:
-        f.write(file_bytes)
+    safe_filename = "".join(char for char in original_filename if char.isalnum() or char in " ._-()").strip(" .")[:180]
+    if not safe_filename:
+        safe_filename = f"document{ext}"
+    storage_key = f"bids/{bid.id}/{uuid.uuid4().hex}{ext}"
+    storage = get_storage_backend()
+    try:
+        storage.upload_file(file_bytes, storage_key, content_type)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Unable to store uploaded document") from exc
 
-    # Run OCR & Extraction
-    extracted_text, ocr_conf = OCRService.process_file(save_path)
-    classified_doc_type, class_conf = DocumentClassifier.classify(safe_filename, extracted_text)
+    is_gemini = settings.LLM_PROVIDER == "gemini"
+    gemini_doc = None
+    if is_gemini:
+        gemini_doc = Document(
+            bid_id=bid.id,
+            document_type=(document_type or "OTHER").strip().upper(),
+            filename=safe_filename,
+            storage_key=storage_key,
+            file_hash=file_hash,
+            document_status="PROCESSING",
+            verification_status="IN_PROGRESS",
+            detail="Gemini document extraction is in progress.",
+            source=f"Gemini ({settings.GEMINI_MODEL})",
+        )
+        db.add(gemini_doc)
+        bid.status = "PROCESSING"
+        bid.ai_assessment = None
+        bid.ai_recommendation = "Gemini is extracting the uploaded document."
+        bid.ai_summary = "Document extraction is in progress."
+        db.commit()
+        db.refresh(gemini_doc)
+        try:
+            extraction = _extract_with_gemini(db, gemini_doc, content_type)
+            db.commit()
+        except GeminiProviderError as exc:
+            gemini_doc.document_status = "PROCESSING_FAILED"
+            gemini_doc.verification_status = "PROCESSING_FAILED"
+            gemini_doc.detail = str(exc)
+            bid.status = "PROCESSING_FAILED"
+            bid.ai_recommendation = "AI processing did not complete. Retry document processing; an officer must review the result."
+            bid.ai_summary = f"Processing failed: {exc}"
+            db.commit()
+            logger.warning("Gemini document extraction failed", extra={"document_id": gemini_doc.id, "error_code": exc.code})
+            return gemini_doc
+        except Exception:
+            gemini_doc.document_status = "PROCESSING_FAILED"
+            gemini_doc.verification_status = "PROCESSING_FAILED"
+            gemini_doc.detail = "Stored document could not be extracted. Retry processing."
+            bid.status = "PROCESSING_FAILED"
+            bid.ai_recommendation = "AI processing did not complete. Retry document processing; an officer must review the result."
+            bid.ai_summary = gemini_doc.detail
+            db.commit()
+            logger.exception("Unexpected document extraction failure for document %s", gemini_doc.id)
+            return gemini_doc
+        extracted_text = None
+        ocr_conf = extraction.confidence_score
+        class_conf = extraction.confidence_score
+        classified_doc_type = extraction.document_type
+        extracted_fields = extracted_fields_for_document(extraction)
+    else:
+        # Local and CI mode keeps deterministic OCR/classification without API usage.
+        extracted_text, ocr_conf = OCRService.process_file(file_bytes, safe_filename)
+        classified_doc_type, class_conf = DocumentClassifier.classify(safe_filename, extracted_text)
+        extracted_fields = FieldExtractor.extract_fields(
+            (document_type or classified_doc_type).strip().upper(), extracted_text
+        )
+
     doc_type = (document_type or classified_doc_type).strip().upper()
     if not doc_type:
         raise HTTPException(status_code=400, detail="Document type is required.")
-    extracted_fields = FieldExtractor.extract_fields(doc_type, extracted_text)
     extracted_map = {field["field_name"]: field["field_value"] for field in extracted_fields}
     consistency_issues = []
     vendor = bid.vendor
@@ -740,7 +901,9 @@ def upload_document(
                 consistency_issues.append("MANUAL_REVIEW_REQUIRED: extracted EPFO identifier has an invalid format.")
         if vendor and vendor.epfo_code and establishment_code and establishment_code.upper() != vendor.epfo_code.upper():
             consistency_issues.append("IDENTITY_MISMATCH: extracted EPFO identifier does not match vendor EPFO identifier.")
-    if ext == ".pdf":
+    if is_gemini:
+        extraction_state = "GEMINI_MULTIMODAL_EXTRACTION"
+    elif ext == ".pdf":
         if extracted_text.strip():
             extraction_state = "PDF_TEXT_EXTRACTED"
         elif ocr_conf <= 50:
@@ -750,35 +913,30 @@ def upload_document(
     else:
         extraction_state = "IMAGE_TEXT_EXTRACTED" if extracted_text.strip() else "IMAGE_OCR_FAILED"
 
-    doc = Document(
-        bid_id=bid.id,
-        document_type=doc_type,
-        filename=safe_filename,
-        file_path=save_path,
-        file_hash=file_hash,
-        extracted_text=extracted_text,
-        ocr_confidence=ocr_conf,
-        document_status="FAILED" if consistency_issues else "UPLOADED",
-        verification_status="MANUAL_REVIEW_REQUIRED" if consistency_issues else "PENDING",
-        source="OCR Engine",
-        detail=f"{extraction_state}; classified as {doc_type} ({class_conf:.0f}% confidence)."
-        + (f" {' '.join(consistency_issues)}" if consistency_issues else "")
+    doc = gemini_doc or Document(
+        bid_id=bid.id, document_type=doc_type, filename=safe_filename,
+        storage_key=storage_key, file_hash=file_hash, extracted_text=extracted_text,
+        ocr_confidence=ocr_conf, source="OCR Engine",
     )
-    db.add(doc)
+    doc.document_type = doc_type
+    doc.extracted_text = extracted_text
+    doc.ocr_confidence = ocr_conf
+    doc.document_status = "FAILED" if consistency_issues else "UPLOADED"
+    doc.verification_status = "MANUAL_REVIEW_REQUIRED" if consistency_issues else "PENDING"
+    if not is_gemini:
+        doc.source = "OCR Engine"
+        db.add(doc)
+    doc.detail = f"{extraction_state}; classified as {doc_type} ({class_conf:.0f}% confidence)."
+    if consistency_issues:
+        doc.detail += f" {' '.join(consistency_issues)}"
     db.commit()
     db.refresh(doc)
 
     # AUDIT ITEM 2: Persist every ExtractedField into DB
-    for ef in extracted_fields:
-        db_field = ExtractedField(
-            document_id=doc.id,
-            field_name=ef["field_name"],
-            field_value=ef["field_value"],
-            confidence=ef["confidence"],
-            validation_status=ef["validation_status"]
-        )
-        db.add(db_field)
-    db.commit()
+    if not is_gemini:
+        for ef in extracted_fields:
+            db.add(ExtractedField(document_id=doc.id, **ef))
+        db.commit()
 
     notify_bid_event(db, bid, "BID_UPDATED", event_id=f"document:{doc.id}")
 
@@ -792,7 +950,7 @@ def upload_document(
 @router.get("/documents", response_model=List[DocumentListResponse])
 def list_bidder_documents(
     search: Optional[str] = Query(None),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("bidder")),
     db: Session = Depends(get_db),
 ):
     if current_user.role != "BIDDER":
@@ -841,20 +999,10 @@ def list_bidder_documents(
             if latest_verification
             else "PENDING"
         )
-        document_path = Path(document.file_path)
-        if not document_path.is_absolute():
-            document_path = Path(BASE_DIR) / document_path
-        document_path = document_path.resolve()
-        upload_root = Path(settings.UPLOAD_DIR).resolve()
-        samples_root = (Path(BASE_DIR) / "samples").resolve()
-        file_available = (
-            document_path.exists()
-            and document_path.is_file()
-            and (
-                upload_root in document_path.parents
-                or samples_root in document_path.parents
-            )
-        )
+        try:
+            file_available = bool(document.storage_key) and get_storage_backend().file_exists(document.storage_key)
+        except Exception:
+            file_available = False
         results.append({
             "id": document.id,
             "bid_id": document.bid_id,
@@ -871,6 +1019,11 @@ def list_bidder_documents(
             "detail": document.detail,
             "source": document.source,
             "file_available": file_available,
+            "extracted_fields": [
+                {"field_name": field.field_name, "field_value": field.field_value,
+                 "confidence": field.confidence, "validation_status": field.validation_status}
+                for field in document.extracted_fields
+            ],
         })
     return results
 
@@ -878,7 +1031,7 @@ def list_bidder_documents(
 def verify_bid(
     bid_id_or_code: str,
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("bidder", "officer", "admin")),
     db: Session = Depends(get_db)
 ):
     bid = db.query(Bid).filter((Bid.id == bid_id_or_code) | (Bid.bid_id == bid_id_or_code)).first()
@@ -894,6 +1047,7 @@ def verify_bid(
     # Reload bid to get updated status
     db.refresh(bid)
 
+    processing_failed = bid.status == "PROCESSING_FAILED"
     # Generate Alert for Bidder
     notif_title = f"Bid Verification: {bid.bid_id}"
     existing_notif = db.query(Notification).filter(
@@ -905,19 +1059,24 @@ def verify_bid(
         notif = Notification(
             user_id=current_user.id,
             title=notif_title,
-            message=f"Verification completed for Bid {bid.bid_id}. Risk Level: {bid.risk_level}",
-            notification_type="WARNING" if bid.risk_level == "HIGH" else "INFO",
+            message=(bid.ai_summary if processing_failed else f"Verification completed for Bid {bid.bid_id}. Risk Level: {bid.risk_level}"),
+            notification_type="ERROR" if processing_failed else "WARNING" if bid.risk_level == "HIGH" else "INFO",
             related_entity_id=bid.id
         )
         db.add(notif)
         db.commit()
 
-    return {"message": "Verification pipeline completed", "bid_id": bid.bid_id, "status": bid.status}
+    return {
+        "message": "Verification processing failed; retry is available." if processing_failed else "Verification pipeline completed",
+        "bid_id": bid.bid_id,
+        "status": bid.status,
+        "error": bid.ai_summary if processing_failed else None,
+    }
 
 @router.get("/documents/{doc_id}/view")
 def view_document(
     doc_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("bidder", "officer", "admin")),
     db: Session = Depends(get_db)
 ):
     doc = db.query(Document).filter(Document.id == doc_id).first()
@@ -927,32 +1086,19 @@ def view_document(
     if current_user.role == "BIDDER" and doc.bid.vendor_id != current_user.vendor_id:
         raise HTTPException(status_code=403, detail="Not authorized to view this document")
 
-    requested_path = Path(doc.file_path)
-    if not requested_path.is_absolute():
-        requested_path = Path(BASE_DIR) / requested_path
-    
-    requested_path = requested_path.resolve()
-    upload_root = Path(settings.UPLOAD_DIR).resolve()
-    samples_root = (Path(BASE_DIR) / "samples").resolve()
-
-    if not requested_path.exists() or not requested_path.is_file():
-        raise HTTPException(status_code=404, detail="File not found on server")
-        
-    is_in_uploads = upload_root in requested_path.parents or requested_path == upload_root
-    is_in_samples = samples_root in requested_path.parents or requested_path == samples_root
-    
-    if not is_in_uploads and not is_in_samples:
-        raise HTTPException(status_code=403, detail="Access to this file is not allowed")
-
     safe_filename = Path(doc.filename).name.replace('"', '').replace("'", "")
     is_pdf = safe_filename.lower().endswith(".pdf")
-
-    # Read binary header to validate magic bytes
+    storage = get_storage_backend()
     try:
-        with open(requested_path, "rb") as f:
-            header = f.read(1024)
-    except Exception:
-        raise HTTPException(status_code=500, detail="Unable to read document file")
+        if settings.STORAGE_BACKEND == "s3":
+            return RedirectResponse(storage.get_download_url(doc.storage_key), status_code=302)
+        file_bytes = storage.download_bytes(doc.storage_key)
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(status_code=404, detail="File not found in storage")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Unable to read document file") from exc
+
+    header = file_bytes[:1024]
 
     if is_pdf:
         if not header.startswith(b"%PDF-"):
@@ -969,4 +1115,24 @@ def view_document(
         "Content-Disposition": f'inline; filename="{safe_filename}"'
     }
 
-    return FileResponse(path=str(requested_path), media_type=media_type, headers=headers)
+    return Response(content=file_bytes, media_type=media_type, headers=headers)
+
+
+@router.get("/documents/storage")
+def download_document_by_storage_key(
+    key: str,
+    current_user: User = Depends(require_role("bidder", "officer", "admin")),
+    db: Session = Depends(get_db),
+):
+    """Authenticated local-storage API URL returned by LocalStorageBackend."""
+    doc = db.query(Document).filter(Document.storage_key == key).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if current_user.role == "BIDDER" and doc.bid.vendor_id != current_user.vendor_id:
+        raise HTTPException(status_code=403, detail="Not authorized to view this document")
+    try:
+        body = get_storage_backend().download_bytes(key)
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(status_code=404, detail="File not found in storage")
+    media_type = "application/pdf" if doc.filename.lower().endswith(".pdf") else "application/octet-stream"
+    return Response(content=body, media_type=media_type, headers={"Content-Disposition": f'inline; filename="{Path(doc.filename).name}"'})

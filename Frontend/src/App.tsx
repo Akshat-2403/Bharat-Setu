@@ -21,6 +21,16 @@ function App() {
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [sessionExpired, setSessionExpired] = useState(false);
+
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      setSessionExpired(true);
+      setCurrentUser(null);
+    };
+    window.addEventListener('bharatsetu:session-expired', handleSessionExpired);
+    return () => window.removeEventListener('bharatsetu:session-expired', handleSessionExpired);
+  }, []);
 
   useEffect(() => {
     const initAuth = async () => {
@@ -44,7 +54,7 @@ function App() {
   }, []);
 
   if (!currentUser) {
-    return <LoginPage onLoginSuccess={(u) => { setCurrentUser(u); setCurrentTab('dashboard'); }} />;
+    return <LoginPage onLoginSuccess={(u) => { setSessionExpired(false); setCurrentUser(u); setCurrentTab('dashboard'); }} initialNotice={sessionExpired ? 'Session expired. Please sign in again.' : undefined} />;
   }
 
   if (currentUser.role === 'BIDDER') {

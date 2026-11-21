@@ -58,17 +58,37 @@ def get_current_user(token: Optional[str] = Depends(oauth2_scheme), db: Session 
     user_id = payload.get("sub")
     user = db.query(User).filter((User.id == user_id) | (User.email == user_id)).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User specified in token not found")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication credentials", headers={"WWW-Authenticate": "Bearer"})
     if not user.is_active:
-        raise HTTPException(status_code=400, detail="Inactive user account")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user account", headers={"WWW-Authenticate": "Bearer"})
     return user
 
-def require_roles(allowed_roles: List[str]):
-    def role_checker(current_user = Depends(get_current_user)):
-        if current_user.role not in allowed_roles:
+
+ROLE_GROUPS = {
+    "officer": {"ADMIN", "OFFICER", "PROCUREMENT_OFFICER", "REVIEWER"},
+    "admin": {"ADMIN"},
+    "auditor": {"ADMIN", "AUDITOR"},
+    "bidder": {"BIDDER"},
+}
+
+
+def require_role(*roles: str):
+    """Require one of the named application roles (case-insensitive)."""
+    allowed = set()
+    for role in roles:
+        normalized = role.strip().lower()
+        allowed.update(ROLE_GROUPS.get(normalized, {normalized.upper()}))
+
+    def role_checker(current_user=Depends(get_current_user)):
+        if str(current_user.role).upper() not in allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"User role '{current_user.role}' is not authorized. Required: {allowed_roles}"
+                detail="Insufficient permissions",
             )
         return current_user
+
     return role_checker
+
+
+def require_roles(allowed_roles: List[str]):
+    return require_role(*allowed_roles)

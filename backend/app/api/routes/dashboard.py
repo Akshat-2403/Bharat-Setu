@@ -3,14 +3,14 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.models import Bid
 from app.schemas.schemas import DashboardMetricsResponse
-from app.core.security import get_current_user
+from app.core.security import require_role
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard Metrics"])
 
 @router.get("/metrics", response_model=DashboardMetricsResponse)
 def get_dashboard_metrics(
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user)
+    current_user=Depends(require_role("bidder", "officer", "admin"))
 ):
     query = db.query(Bid)
     if current_user.role == "BIDDER":

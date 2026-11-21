@@ -44,6 +44,7 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
   };
   const statusConfig: Record<string, { label: string; cls: string; dot: string }> = {
     pending_review: { label: t('pendingReviewStatus'), cls: 'bg-navy-50 text-navy-700', dot: 'bg-navy-500' },
+    processing_failed: { label: 'Processing failed', cls: 'bg-red-50 text-red-700', dot: 'bg-red-500' },
     approved: { label: t('approved'), cls: 'bg-emerald-50 text-emerald-700', dot: 'bg-emerald-500' },
     rejected: { label: t('rejected'), cls: 'bg-red-50 text-red-700', dot: 'bg-red-500' },
     flagged: { label: t('flagged'), cls: 'bg-amber-50 text-amber-700', dot: 'bg-amber-500' },
@@ -54,6 +55,7 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
     pending: { icon: Clock3, color: 'text-amber-500', label: t('pending') },
     uploaded: { icon: Clock3, color: 'text-amber-500', label: t('uploaded') },
     processing: { icon: Clock3, color: 'text-amber-500', label: t('processing') },
+    processing_failed: { icon: XCircle, color: 'text-red-500', label: 'Processing failed' },
     in_progress: { icon: Clock3, color: 'text-amber-500', label: t('inProgress') },
     manual_review_required: { icon: Clock3, color: 'text-amber-500', label: t('manualReview') },
     warning: { icon: Clock3, color: 'text-amber-500', label: t('warning') },
@@ -64,6 +66,9 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
   const [activeActionModal, setActiveActionModal] = useState<{ id: string; action: 'reject' | 'escalate' } | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [uploadingDoc, setUploadingDoc] = useState<boolean>(false);
+  const [operationMessage, setOperationMessage] = useState('');
+  const [operationError, setOperationError] = useState('');
+  const [retryingBidId, setRetryingBidId] = useState<string | null>(null);
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const loadBids = () => {
@@ -126,14 +131,44 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
 
   const handleFileUpload = async (bidId: string, file: File, documentType?: string) => {
     setUploadingDoc(true);
+    setOperationError('');
+    setOperationMessage('Uploading and extracting document fields…');
     try {
-      await uploadBidDocument(bidId, file, documentType);
-      await triggerBidVerification(bidId);
+      const uploaded = await uploadBidDocument(bidId, file, documentType);
+      if (uploaded.document_status === 'PROCESSING_FAILED') {
+        setOperationError(uploaded.detail || 'Document extraction failed. Retry processing from the bid.');
+      } else {
+        setOperationMessage('Assessing tender compliance…');
+        const result = await triggerBidVerification(bidId);
+        if (result.status === 'PROCESSING_FAILED') {
+          setOperationError(result.error || 'Compliance analysis failed. Retry verification.');
+        }
+      }
       loadBids();
     } catch (err: any) {
-      alert(err?.response?.data?.detail || 'Document upload error');
+      setOperationError(err?.response?.data?.detail || 'Document upload or AI processing failed.');
+      loadBids();
     } finally {
       setUploadingDoc(false);
+      setOperationMessage('');
+    }
+  };
+
+  const handleRetryVerification = async (bidId: string) => {
+    setRetryingBidId(bidId);
+    setOperationError('');
+    setOperationMessage('Retrying document extraction and compliance assessment…');
+    try {
+      const result = await triggerBidVerification(bidId);
+      if (result.status === 'PROCESSING_FAILED') {
+        setOperationError(result.error || 'AI processing failed again. Review the error and retry later.');
+      }
+      loadBids();
+    } catch (err: any) {
+      setOperationError(err?.response?.data?.detail || 'Could not retry AI processing.');
+    } finally {
+      setRetryingBidId(null);
+      setOperationMessage('');
     }
   };
 
@@ -206,6 +241,11 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
           </button>
         </div>
       </div>
+      {(uploadingDoc || operationError) && (
+        <div className={`mx-6 mt-4 rounded-lg border px-3 py-2 text-xs ${operationError ? 'border-red-200 bg-red-50 text-red-700' : 'border-indigo-200 bg-indigo-50 text-indigo-700'}`} role={operationError ? 'alert' : 'status'}>
+          {operationError || operationMessage}
+        </div>
+      )}
 
       {/* Column headers */}
       <div className="grid grid-cols-[40px_1.5fr_1fr_1fr_1fr_120px_40px] gap-3 px-6 py-3 bg-slate-50 border-b border-slate-200 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
@@ -319,6 +359,31 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
                           {rec.aiRecommendation}
                         </p>
                         <p className="text-[12px] text-slate-400 leading-relaxed">{rec.aiSummary}</p>
+
+                        {rec.ai_assessment && (
+                          <div className="mt-4 space-y-2" aria-label="AI compliance assessment">
+                            <p className="text-xs font-bold text-slate-700">Tender requirement findings</p>
+                            {rec.ai_assessment.requirements.map((finding, index) => (
+                              <div key={`${finding.requirement}-${index}`} className={`rounded-lg border p-3 text-xs ${finding.status === 'PASS' ? 'border-emerald-200 bg-emerald-50/50' : finding.status === 'FAIL' ? 'border-red-200 bg-red-50/50' : 'border-amber-200 bg-amber-50/50'}`}>
+                                <div className="flex items-center justify-between gap-2">
+                                  <strong className="text-slate-800">{finding.requirement}</strong>
+                                  <span className="font-bold">{finding.status}</span>
+                                </div>
+                                <p className="mt-1 text-slate-600">{finding.finding}</p>
+                                {finding.evidence_quote && <p className="mt-1 text-slate-500">Evidence: “{finding.evidence_quote}”</p>}
+                                {finding.recommended_action && <p className="mt-1 text-slate-500">Next step: {finding.recommended_action}</p>}
+                              </div>
+                            ))}
+                            {rec.ai_assessment.discrepancies.map((item, index) => (
+                              <div key={`discrepancy-${index}`} className="rounded-lg border border-orange-200 bg-orange-50/60 p-3 text-xs">
+                                <strong className="text-orange-800">Discrepancy · {item.document_name}</strong>
+                                <p className="mt-1 text-slate-600">{item.description}</p>
+                                <p className="mt-1 text-slate-500">Evidence: “{item.evidence_quote}”</p>
+                              </div>
+                            ))}
+                            <p className="text-[11px] text-slate-400">AI provides decision support only. An authorized officer makes the final decision.</p>
+                          </div>
+                        )}
 
                         {/* Human oversight banner */}
                         {currentUser?.role !== 'BIDDER' && (
@@ -466,6 +531,24 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
                                   {doc.source}
                                 </p>
                                 <p className="text-[12px] text-slate-500 leading-snug">{doc.detail}</p>
+                                {doc.status === 'processing_failed' && (
+                                  <button
+                                    type="button"
+                                    disabled={retryingBidId === rec.id}
+                                    onClick={() => void handleRetryVerification(rec.id)}
+                                    className="mt-2 rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                                  >
+                                    {retryingBidId === rec.id ? 'Retrying…' : 'Retry AI processing'}
+                                  </button>
+                                )}
+                                {!!doc.extracted_fields?.length && (
+                                  <div className="mt-2 rounded-md bg-white/70 p-2 text-[11px] text-slate-600">
+                                    <p className="font-semibold text-slate-700 mb-1">Extracted fields</p>
+                                    {doc.extracted_fields.map((field) => (
+                                      <p key={field.field_name}>{field.field_name.replace(/_/g, ' ')}: {field.field_value || 'Not detected'} <span className="text-slate-400">({Math.round(field.confidence)}% confidence)</span></p>
+                                    ))}
+                                  </div>
+                                )}
                                 <div className="flex items-center gap-2 mt-2 pt-2 border-t border-slate-200/60">
                                   <button
                                     type="button"

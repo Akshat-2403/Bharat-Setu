@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import Column, String, Integer, Float, Boolean, DateTime, ForeignKey, Text, JSON
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, synonym
 from app.db.database import Base
 
 def generate_uuid():
@@ -98,6 +98,7 @@ class Bid(Base):
     ai_confidence = Column(Integer, default=85)
     ai_recommendation = Column(Text, nullable=True)
     ai_summary = Column(Text, nullable=True)
+    ai_assessment = Column(JSON, nullable=True)
     
     reviewed_by = Column(String, nullable=True)
     reviewed_at = Column(DateTime, nullable=True)
@@ -118,7 +119,9 @@ class Document(Base):
     bid_id = Column(String, ForeignKey("bids.id"), nullable=False)
     document_type = Column(String, nullable=False) # GST, PAN, UDYAM, EPFO, ESIC, MCA, FINANCIAL, WORK_EXPERIENCE, DEBARMENT, etc.
     filename = Column(String, nullable=False)
-    file_path = Column(String, nullable=False)
+    storage_key = Column(String, nullable=False)
+    # Compatibility alias for older callers; the database stores only object keys.
+    file_path = synonym("storage_key")
     file_hash = Column(String, index=True, nullable=False) # SHA-256
     upload_timestamp = Column(DateTime, default=utc_now)
     

@@ -4,7 +4,7 @@ from app.db.database import get_db
 from app.models.models import Bid, ReviewDecision, User
 from app.schemas.schemas import ReviewDecisionCreate
 from app.services.audit.audit_logger import AuditLogger
-from app.core.security import get_current_user, require_roles
+from app.core.security import require_role
 from app.services.notifications.notification_service import notify_bid_event
 
 router = APIRouter(prefix="/bids", tags=["Review Decisions"])
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/bids", tags=["Review Decisions"])
 def approve_bid(
     bid_id_or_code: str,
     payload: ReviewDecisionCreate,
-    current_user: User = Depends(require_roles(["ADMIN", "PROCUREMENT_OFFICER"])),
+    current_user: User = Depends(require_role("officer")),
     db: Session = Depends(get_db)
 ):
     bid = db.query(Bid).filter((Bid.id == bid_id_or_code) | (Bid.bid_id == bid_id_or_code)).first()
@@ -46,7 +46,7 @@ def approve_bid(
 def reject_bid(
     bid_id_or_code: str,
     payload: ReviewDecisionCreate,
-    current_user: User = Depends(require_roles(["ADMIN", "PROCUREMENT_OFFICER"])),
+    current_user: User = Depends(require_role("officer")),
     db: Session = Depends(get_db)
 ):
     if not payload.reason or len(payload.reason.strip()) < 5:
@@ -82,7 +82,7 @@ def reject_bid(
 def escalate_bid(
     bid_id_or_code: str,
     payload: ReviewDecisionCreate,
-    current_user: User = Depends(require_roles(["ADMIN", "PROCUREMENT_OFFICER", "REVIEWER"])),
+    current_user: User = Depends(require_role("officer")),
     db: Session = Depends(get_db)
 ):
     if not payload.reason or len(payload.reason.strip()) < 5:

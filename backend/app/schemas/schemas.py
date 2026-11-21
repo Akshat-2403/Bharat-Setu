@@ -80,6 +80,12 @@ class VendorResponse(VendorCreate):
         from_attributes = True
 
 # Documents
+class ExtractedFieldSchema(BaseModel):
+    field_name: str
+    field_value: Optional[str]
+    confidence: float
+    validation_status: str
+
 class DocCheckSchema(BaseModel):
     id: str
     name: str
@@ -87,12 +93,7 @@ class DocCheckSchema(BaseModel):
     status: str # verified, failed, pending
     source: str
     detail: str
-
-class ExtractedFieldSchema(BaseModel):
-    field_name: str
-    field_value: Optional[str]
-    confidence: float
-    validation_status: str
+    extracted_fields: List[ExtractedFieldSchema] = []
 
 class DocumentResponse(BaseModel):
     id: str
@@ -127,6 +128,7 @@ class DocumentListResponse(BaseModel):
     detail: Optional[str] = None
     source: Optional[str] = None
     file_available: bool = False
+    extracted_fields: List[ExtractedFieldSchema] = []
 
 # Verification & Compliance
 class RuleResultSchema(BaseModel):
@@ -182,6 +184,7 @@ class BidResponse(BaseModel):
     aiConfidence: int
     aiRecommendation: Optional[str] = None
     aiSummary: Optional[str] = None
+    ai_assessment: Optional[Dict[str, Any]] = None
     documents: List[DocCheckSchema] = []
     audit_trail: List[AuditEntrySchema] = []
     officer: Optional[str] = None

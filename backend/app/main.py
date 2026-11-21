@@ -1,7 +1,11 @@
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from app.core.config import settings
+from app.core.middleware import AuthRateLimitMiddleware
 from app.db.database import engine
 from app.db.seed_data import seed_db, seed_demo_users
 
@@ -30,6 +34,15 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc"
 )
+
+logger = logging.getLogger(__name__)
+app.add_middleware(AuthRateLimitMiddleware)
+
+
+@app.exception_handler(Exception)
+async def unexpected_error_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled API exception", extra={"path": request.url.path})
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 # AUDIT ITEM 13: Strict CORS configuration (specific origins with allow_credentials)
 app.add_middleware(

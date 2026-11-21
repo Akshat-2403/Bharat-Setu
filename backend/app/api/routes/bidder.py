@@ -2,16 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.models import Bid, Document, Verification, Notification, User, Tender
-from app.core.security import get_current_user
+from app.core.security import require_role
 from app.core.tender_rules import MIN_TENDER_VALUE_INR
 from datetime import datetime, timedelta
 
 router = APIRouter(prefix="/bidder", tags=["Bidder Portal"])
 
 @router.get("/dashboard")
-def get_bidder_dashboard(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "BIDDER":
-        raise HTTPException(status_code=403, detail="Not authorized")
+def get_bidder_dashboard(db: Session = Depends(get_db), current_user: User = Depends(require_role("bidder"))):
 
     if not current_user.vendor_id:
         return {"active_bids": 0, "pending_bids": 0, "approved_bids": 0, "rejected_bids": 0, "total_documents": 0, "verified_documents": 0, "failed_documents": 0, "compliance_percentage": 0}
@@ -73,9 +71,7 @@ def get_bidder_dashboard(db: Session = Depends(get_db), current_user: User = Dep
     }
 
 @router.get("/alerts")
-def get_bidder_alerts(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "BIDDER":
-        raise HTTPException(status_code=403, detail="Not authorized")
+def get_bidder_alerts(db: Session = Depends(get_db), current_user: User = Depends(require_role("bidder"))):
         
     if not current_user.vendor_id:
         return []
@@ -99,9 +95,7 @@ def get_bidder_alerts(db: Session = Depends(get_db), current_user: User = Depend
 
 
 @router.get("/suggested-tenders")
-def get_suggested_tenders(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    if current_user.role != "BIDDER":
-        raise HTTPException(status_code=403, detail="Not authorized")
+def get_suggested_tenders(db: Session = Depends(get_db), current_user: User = Depends(require_role("bidder"))):
         
     if not current_user.vendor_id:
         return []

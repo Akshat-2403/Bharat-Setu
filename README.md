@@ -95,7 +95,7 @@ alembic upgrade head
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-The FastAPI backend will automatically create SQLite database tables and seed representative/demo tender and bidder datasets.
+The FastAPI backend uses local disk storage by default. `STORAGE_BACKEND=local` and `UPLOAD_DIR` control where documents are saved.
 
 - **Swagger API Documentation**: [http://localhost:8000/docs](http://localhost:8000/docs)
 - **ReDoc Documentation**: [http://localhost:8000/redoc](http://localhost:8000/redoc)
@@ -152,9 +152,38 @@ Render runs Alembic migrations before starting Uvicorn. Configure `CORS_ORIGINS`
 with the exact Vercel production origin (and any preview origins that are needed).
 Set `ENVIRONMENT=production`, a generated `JWT_SECRET_KEY`, the Render
 `DATABASE_URL`, and `ENABLE_DEMO_SEED=false`. SQLite is for local development only.
-Uploaded files still use local disk; production use requires durable object storage.
+Production requires `STORAGE_BACKEND=s3` and an S3-compatible bucket (Cloudflare R2,
+Supabase Storage's S3 endpoint, or another compatible service). Set `S3_ENDPOINT_URL`,
+`S3_BUCKET_NAME`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, and `S3_REGION` in the
+Render service environment. Keep credentials in deployment settings, never in source
+control. New uploads are stored under opaque object keys; the API authorizes document
+views before returning a local file or a one-hour presigned object URL. Render runs
+`python scripts/migrate_documents_to_s3.py` before Alembic on startup.
+The utility checks each legacy source hash, copies the object, and verifies the
+stored bytes before migration 0002 removes the old path column. Missing files or
+integrity mismatches stop the transfer so they can be resolved before deployment.
+For compliance processing, Render also requires `LLM_PROVIDER=gemini` and
+`GEMINI_API_KEY`. `GEMINI_MODEL` defaults to `gemini-2.5-flash` and
+`GEMINI_TIMEOUT_SECONDS` bounds each request. Gemini receives stored document bytes
+directly, returns schema-validated extraction and requirement findings, and does not
+require Tesseract in production. Use `LLM_PROVIDER=mock` locally and in CI to use
+deterministic extraction and scoring without Gemini API calls. Provider failures are
+persisted as `PROCESSING_FAILED` with a retry action; an authorized officer still
+makes the final procurement decision.
 Government providers remain simulated and the boundary remains **Officer Decides.
 AI Verifies.**
+
+Authentication tokens expire after 30 minutes by default. `ACCESS_TOKEN_EXPIRE_MINUTES`
+can be set from 1 to 60 minutes. Login and registration are limited to 10 failed
+attempts per client IP per minute and return HTTP 429 while the limit is active.
+The limiter is process-local; deployments that scale across multiple backend
+instances should enforce the same limit at a shared gateway or distributed store.
+Officer/admin routes enforce role dependencies, and bidder bid, document, report,
+and vendor reads are scoped to the authenticated vendor. Expired frontend sessions
+clear the saved token and return the user to sign-in with a session-expired notice.
+
+GitHub Actions runs frontend typecheck/build and backend Alembic/pytest checks for
+pushes and pull requests targeting `main`.
 
 ---
 

@@ -8,6 +8,7 @@ from app.models.models import (
     Verification, RuleResult, CrossCheck, RiskAssessment, AuditEvent, DebarmentRecord,
     Notification
 )
+from app.services.storage import get_storage_backend
 from app.core.security import get_password_hash, verify_password
 from app.core.tender_rules import MIN_TENDER_VALUE_INR
 from app.services.audit.audit_logger import AuditLogger
@@ -400,16 +401,16 @@ def seed_db():
         ]
         doc_ids = {}
         for doc_type, filename, gstin_v, pan_v, udyam_v in doc_specs:
-            pdf_path = _UPLOAD_DIR / filename
             pdf_bytes = _make_valid_pdf(doc_type, vendor_a.name, gstin_v, pan_v, udyam_v)
-            pdf_path.write_bytes(pdf_bytes)
+            storage_key = f"demo/{demo_bid.id}/{filename}"
+            get_storage_backend().upload_file(pdf_bytes, storage_key, "application/pdf")
             sha = hashlib.sha256(pdf_bytes).hexdigest()
 
             doc = Document(
                 bid_id=demo_bid.id,
                 document_type=doc_type,
                 filename=filename,
-                file_path=str(pdf_path),
+                storage_key=storage_key,
                 file_hash=sha,
                 extracted_text=f"{doc_type} Certificate for {vendor_a.name}",
                 ocr_confidence=95.0,
@@ -468,27 +469,7 @@ def seed_db():
     # ------------------------------------------------------------------ #
     # AUTO-HEAL: regenerate any referenced PDF that is missing on disk    #
     # ------------------------------------------------------------------ #
-    for doc in db.query(Document).all():
-        if not doc.file_path or doc.file_path == "dummy":
-            continue
-
-        original_path = Path(doc.file_path)
-        # Keep seeded files inside the project upload directory. This also
-        # repairs absolute paths persisted by an earlier machine or checkout.
-        if original_path.is_absolute() and _UPLOAD_DIR not in original_path.parents:
-            p = _UPLOAD_DIR / Path(doc.filename).name
-            doc.file_path = str(p)
-        elif original_path.is_absolute():
-            p = original_path
-        else:
-            p = _BACKEND_DIR / original_path
-
-        if not p.exists():
-            p.parent.mkdir(parents=True, exist_ok=True)
-            vendor_name_for_pdf = "Unknown Vendor"
-            if doc.bid and doc.bid.vendor:
-                vendor_name_for_pdf = doc.bid.vendor.name
-            p.write_bytes(_make_valid_pdf(doc.document_type, vendor_name_for_pdf))
+    # Demo documents are created through the configured storage backend above.
 
     db.commit()
 

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.models import SupportTicket, User
 from app.schemas.schemas import SupportTicketCreate, SupportTicketSchema
-from app.core.security import get_current_user
+from app.core.security import require_role
 
 router = APIRouter(prefix="/support", tags=["Support"])
 
@@ -11,7 +11,7 @@ router = APIRouter(prefix="/support", tags=["Support"])
 def create_support_ticket(
     ticket: SupportTicketCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_role("bidder", "officer", "admin"))
 ):
     db_ticket = SupportTicket(
         user_id=current_user.id,

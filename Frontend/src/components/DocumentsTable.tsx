@@ -7,6 +7,7 @@ const statusClass = (status: string) => {
   const normalized = status.toLowerCase();
   if (normalized === 'verified' || normalized === 'valid') return 'bg-emerald-50 text-emerald-700 border-emerald-200';
   if (normalized === 'failed' || normalized === 'invalid') return 'bg-red-50 text-red-700 border-red-200';
+  if (normalized === 'processing_failed') return 'bg-red-50 text-red-700 border-red-200';
   return 'bg-amber-50 text-amber-700 border-amber-200';
 };
 
@@ -14,6 +15,7 @@ export default function DocumentsTable({ searchTerm = '' }: { searchTerm?: strin
   const { t } = useTranslation();
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [selectedDocument, setSelectedDocument] = useState<DocumentRecord | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -23,7 +25,7 @@ export default function DocumentsTable({ searchTerm = '' }: { searchTerm?: strin
     if (normalized.includes('missing')) return { label: `✕ ${t('missing')}`, icon: AlertTriangle };
     if (normalized.includes('expired')) return { label: `⚠ ${t('expired')}`, icon: AlertTriangle };
     if (normalized.includes('unavailable')) return { label: `⚠ ${t('verificationUnavailable')}`, icon: AlertTriangle };
-    if (normalized === 'failed' || normalized === 'invalid' || normalized === 'warning') return { label: `⚠ ${t('needsAttention')}`, icon: AlertTriangle };
+    if (normalized === 'failed' || normalized === 'invalid' || normalized === 'warning' || normalized === 'processing_failed') return { label: `⚠ ${t('needsAttention')}`, icon: AlertTriangle };
     return { label: status, icon: HelpCircle };
   };
 
@@ -38,9 +40,13 @@ export default function DocumentsTable({ searchTerm = '' }: { searchTerm?: strin
 
   const loadDocuments = () => {
     setLoading(true);
+    setLoadError('');
     fetchDocuments({ search: searchTerm })
       .then(setDocuments)
-      .catch((error) => console.error('Failed to load documents', error))
+      .catch((error) => {
+        console.error('Failed to load documents', error);
+        setLoadError('Documents could not be loaded. Check your connection and retry.');
+      })
       .finally(() => setLoading(false));
   };
 
@@ -71,6 +77,19 @@ export default function DocumentsTable({ searchTerm = '' }: { searchTerm?: strin
               <div className="col-span-2"><p className="text-slate-400">{t('relatedBidTender')}</p><p className="font-semibold text-slate-700">{selectedDocument.bid_reference} · {selectedDocument.tender_title}</p></div>
               <div className="col-span-2"><p className="text-slate-400">{t('uploaded')}</p><p className="font-semibold text-slate-700">{new Date(selectedDocument.upload_timestamp).toLocaleString()}</p></div>
             </div>
+            {!!selectedDocument.extracted_fields?.length && (
+              <div className="mt-4 rounded-lg border border-slate-200 p-3 text-xs">
+                <p className="font-semibold text-slate-700 mb-2">Extracted fields</p>
+                <div className="space-y-1">
+                  {selectedDocument.extracted_fields.map((field) => (
+                    <p key={field.field_name} className="text-slate-600">
+                      <span className="font-medium">{field.field_name.replace(/_/g, ' ')}:</span> {field.field_value || 'Not detected'}
+                      <span className="ml-1 text-slate-400">({Math.round(field.confidence)}% confidence · {field.validation_status.toLowerCase()})</span>
+                    </p>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="mt-4 rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs text-slate-600">
               <p className="font-semibold text-slate-700 mb-1">{t('verificationDetails')}</p>
               <p>{selectedDocument.detail || selectedDocument.verification_result}</p>
@@ -102,7 +121,11 @@ export default function DocumentsTable({ searchTerm = '' }: { searchTerm?: strin
         </button>
       </div>
 
-      {documents.length === 0 && !loading ? (
+      {loadError && <div role="alert" className="mx-6 mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{loadError}</div>}
+
+      {loading && documents.length === 0 && <div role="status" className="px-6 py-8 text-center text-sm text-slate-500">Loading documents…</div>}
+
+      {documents.length === 0 && !loading && !loadError ? (
         <div className="px-6 py-16 text-center">
           <FileText className="w-10 h-10 mx-auto text-slate-300 mb-3" />
           <p className="text-sm font-semibold text-slate-700">{t('noDocumentsUploaded')}</p>

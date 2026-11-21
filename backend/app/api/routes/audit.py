@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.models import AuditEvent, User
 from app.schemas.schemas import AuditEntrySchema
-from app.core.security import get_current_user
+from app.core.security import require_role
 
 router = APIRouter(prefix="/audit", tags=["Audit Trail"])
 
@@ -13,7 +13,7 @@ def get_audit_trail(
     bid_id: Optional[str] = None,
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_role("officer", "auditor"))
 ):
     query = db.query(AuditEvent)
     if bid_id:

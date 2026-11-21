@@ -1,10 +1,11 @@
 from typing import List, Dict, Any
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from app.core.security import require_role
 
 router = APIRouter(prefix="/verification", tags=["Government Providers"])
 
 @router.get("/providers")
-def list_verification_providers() -> List[Dict[str, Any]]:
+def list_verification_providers(current_user=Depends(require_role("bidder", "officer", "admin"))) -> List[Dict[str, Any]]:
     """
     Returns architecture specification of available government verification providers.
     Displays explicitly whether providers are running in SIMULATED or PRODUCTION mode.

@@ -17,6 +17,19 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const requestUrl = String(error?.config?.url || '');
+    if (error?.response?.status === 401 && !/\/auth\/(login|register)(\?|$)/.test(requestUrl)) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      window.dispatchEvent(new CustomEvent('bharatsetu:session-expired'));
+    }
+    return Promise.reject(error);
+  },
+);
+
 export interface BidRecord {
   id: string;
   vendorName: string;
@@ -27,17 +40,31 @@ export interface BidRecord {
   riskLevel: 'low' | 'medium' | 'high';
   risk_score: number;
   compliance_score: number;
-  status: 'draft' | 'processing' | 'pending_review' | 'approved' | 'rejected' | 'flagged';
+  status: 'draft' | 'processing' | 'processing_failed' | 'pending_review' | 'approved' | 'rejected' | 'flagged';
   aiConfidence: number;
   aiRecommendation: string;
   aiSummary: string;
+  ai_assessment?: {
+    requirements: {
+      requirement: string;
+      document_type?: string | null;
+      status: 'PASS' | 'FAIL' | 'WARNING';
+      finding: string;
+      evidence_quote?: string | null;
+      recommended_action?: string | null;
+    }[];
+    risk_score: number;
+    discrepancies: { description: string; evidence_quote: string; document_name: string }[];
+    officer_review_summary: string;
+  } | null;
   documents: {
     id: string;
     name: string;
     document_type?: string;
-    status: 'verified' | 'failed' | 'pending';
+    status: 'verified' | 'failed' | 'pending' | 'processing' | 'processing_failed' | 'manual_review_required';
     source: string;
     detail: string;
+    extracted_fields?: ExtractedFieldRecord[];
   }[];
   audit_trail: {
     id?: string;
@@ -73,6 +100,14 @@ export interface DocumentRecord {
   detail?: string;
   source?: string;
   file_available: boolean;
+  extracted_fields: ExtractedFieldRecord[];
+}
+
+export interface ExtractedFieldRecord {
+  field_name: string;
+  field_value: string | null;
+  confidence: number;
+  validation_status: string;
 }
 
 export interface DashboardMetrics {

@@ -5,20 +5,20 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.models import Tender, TenderRequirement, User
 from app.schemas.schemas import TenderCreate, TenderResponse, TenderDeadlineUpdate
-from app.core.security import get_current_user, require_roles
+from app.core.security import require_role
 from app.core.tender_rules import MIN_TENDER_VALUE_INR, format_inr, tender_value_is_eligible
 
 router = APIRouter(prefix="/tenders", tags=["Tenders"])
 
 @router.get("", response_model=List[TenderResponse])
-def list_tenders(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def list_tenders(db: Session = Depends(get_db), current_user: User = Depends(require_role("bidder", "officer", "admin"))):
     return db.query(Tender).filter(
         Tender.status == "ACTIVE",
         Tender.estimated_value >= MIN_TENDER_VALUE_INR
     ).all()
 
 @router.post("", response_model=TenderResponse)
-def create_tender(payload: TenderCreate, db: Session = Depends(get_db), current_user: User = Depends(require_roles(["ADMIN", "PROCUREMENT_OFFICER"]))):
+def create_tender(payload: TenderCreate, db: Session = Depends(get_db), current_user: User = Depends(require_role("officer"))):
     existing = db.query(Tender).filter(Tender.tender_id == payload.tender_id).first()
     if existing:
         raise HTTPException(status_code=400, detail="Tender ID already exists")
@@ -61,7 +61,7 @@ def update_tender_deadline(
     tender_id_or_id: str,
     payload: TenderDeadlineUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["ADMIN", "PROCUREMENT_OFFICER"])),
+    current_user: User = Depends(require_role("officer")),
 ):
     try:
         deadline = datetime.strptime(payload.bid_deadline, "%Y-%m-%d").date()
@@ -80,7 +80,7 @@ def update_tender_deadline(
     return tender
 
 @router.get("/{tender_id_or_id}", response_model=TenderResponse)
-def get_tender(tender_id_or_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+def get_tender(tender_id_or_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_role("bidder", "officer", "admin"))):
     tender = db.query(Tender).filter((Tender.id == tender_id_or_id) | (Tender.tender_id == tender_id_or_id)).first()
     if not tender:
         raise HTTPException(status_code=404, detail="Tender not found")

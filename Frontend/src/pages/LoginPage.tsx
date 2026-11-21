@@ -5,9 +5,10 @@ import { LanguageSelector, useTranslation } from '@/i18n';
 
 interface LoginPageProps {
   onLoginSuccess: (user: any) => void;
+  initialNotice?: string;
 }
 
-export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
+export default function LoginPage({ onLoginSuccess, initialNotice }: LoginPageProps) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<'login' | 'register'>('login');
   
@@ -24,7 +25,7 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
   const [regGstin, setRegGstin] = useState('');
   
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(initialNotice || '');
 
   const setDemoCredentials = (role: 'officer' | 'bidder' | 'admin') => {
     setError('');

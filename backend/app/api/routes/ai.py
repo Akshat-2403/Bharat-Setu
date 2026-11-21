@@ -3,19 +3,19 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.models import User, Bid, Document, Verification, Notification
 from app.schemas.schemas import ChatRequest, ChatResponse
-from app.core.security import get_current_user
+from app.core.security import require_role
 
 router = APIRouter(prefix="/support/chat", tags=["AI Support"])
 
 @router.post("", response_model=ChatResponse)
 def ai_support_chat(
     payload: ChatRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("bidder", "officer")),
     db: Session = Depends(get_db)
 ):
     if current_user.role != "BIDDER":
         return {"reply": "[MOCK AI] I am the Bidder Compliance Assistant. I can only assist bidders with their compliance status."}
-        
+
     query = payload.query.lower().strip()
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty.")

@@ -1,6 +1,7 @@
 import os
 import hashlib
 import logging
+from io import BytesIO
 from typing import Tuple
 import pypdf
 import fitz
@@ -20,19 +21,20 @@ class OCRService:
         return hashlib.sha256(file_bytes).hexdigest()
 
     @staticmethod
-    def process_file(file_path: str) -> Tuple[str, float]:
+    def process_file(file_path: str | bytes, filename: str | None = None) -> Tuple[str, float]:
         """
         Extracts text from PDF or Image file.
         Returns: (extracted_text, ocr_confidence)
         """
-        ext = os.path.splitext(file_path)[1].lower()
+        file_bytes = file_path if isinstance(file_path, bytes) else None
+        ext = os.path.splitext(filename or ("document.pdf" if file_bytes is not None else file_path))[1].lower()
         extracted_text = ""
         confidence = 95.0
 
         if ext == ".pdf":
             # 1. Try PyMuPDF
             try:
-                doc = fitz.open(file_path)
+                doc = fitz.open(stream=file_bytes, filetype="pdf") if file_bytes is not None else fitz.open(file_path)
                 full_text = []
                 for page in doc:
                     text = page.get_text("text")
@@ -46,7 +48,7 @@ class OCRService:
             # 2. Fallback to pypdf
             if not extracted_text:
                 try:
-                    reader = pypdf.PdfReader(file_path)
+                    reader = pypdf.PdfReader(BytesIO(file_bytes) if file_bytes is not None else file_path)
                     pypdf_text = []
                     for page in reader.pages:
                         t = page.extract_text()
@@ -59,8 +61,11 @@ class OCRService:
             # 3. Render image-only PDFs and run the existing OCR engine.
             if not extracted_text:
                 try:
-                    with open(file_path, "rb") as raw_file:
-                        raw = raw_file.read().decode("utf-8", errors="ignore").strip()
+                    if file_bytes is not None:
+                        raw = file_bytes.decode("utf-8", errors="ignore").strip()
+                    else:
+                        with open(file_path, "rb") as raw_file:
+                            raw = raw_file.read().decode("utf-8", errors="ignore").strip()
                     if any(marker in raw.upper() for marker in (
                         "GSTIN", "GOODS AND SERVICES TAX", "GST", "UDYAM", "PERMANENT ACCOUNT NUMBER",
                         "INCOME TAX", "PAN", "EPFO", "EMPLOYEES' PROVIDENT FUND",
@@ -73,7 +78,7 @@ class OCRService:
             if not extracted_text:
                 try:
                     if PYTESSERACT_AVAILABLE:
-                        doc = fitz.open(file_path)
+                        doc = fitz.open(stream=file_bytes, filetype="pdf") if file_bytes is not None else fitz.open(file_path)
                         ocr_pages = []
                         for page in doc:
                             pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
@@ -93,7 +98,7 @@ class OCRService:
         elif ext in [".png", ".jpg", ".jpeg"]:
             if PYTESSERACT_AVAILABLE:
                 try:
-                    img = Image.open(file_path)
+                    img = Image.open(BytesIO(file_bytes) if file_bytes is not None else file_path)
                     extracted_text = pytesseract.image_to_string(img).strip()
                     confidence = 90.0
                 except Exception:
@@ -102,11 +107,14 @@ class OCRService:
             
             if not extracted_text:
                 try:
-                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        raw = f.read()
-                        if "GSTIN" in raw or "UDYAM" in raw or "PAN" in raw:
-                            extracted_text = raw.strip()
-                            confidence = 90.0
+                    if file_bytes is not None:
+                        raw = file_bytes.decode("utf-8", errors="ignore")
+                    else:
+                        with open(file_path, "rb") as raw_file:
+                            raw = raw_file.read().decode("utf-8", errors="ignore")
+                    if "GSTIN" in raw or "UDYAM" in raw or "PAN" in raw:
+                        extracted_text = raw.strip()
+                        confidence = 90.0
                 except Exception as exc:
                     logger.warning("Image OCR fallback failed for %s: %s", file_path, exc)
 

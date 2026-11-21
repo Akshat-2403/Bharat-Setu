@@ -4,14 +4,14 @@ from typing import List
 from app.db.database import get_db
 from app.models.models import Notification, User
 from app.schemas.schemas import NotificationSchema
-from app.core.security import get_current_user
+from app.core.security import require_role
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
 @router.get("", response_model=List[NotificationSchema])
 def get_notifications(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_role("bidder", "officer", "admin"))
 ):
     notifications = db.query(Notification).filter(
         Notification.user_id == current_user.id,
@@ -22,7 +22,7 @@ def get_notifications(
 @router.get("/unread-count")
 def get_unread_count(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_role("bidder", "officer", "admin"))
 ):
     count = db.query(Notification).filter(
         Notification.user_id == current_user.id,
@@ -35,7 +35,7 @@ def get_unread_count(
 def mark_as_read(
     notification_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_role("bidder", "officer", "admin"))
 ):
     notification = db.query(Notification).filter(
         Notification.id == notification_id,
@@ -51,7 +51,7 @@ def mark_as_read(
 @router.post("/read-all")
 def mark_all_as_read(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_role("bidder", "officer", "admin"))
 ):
     db.query(Notification).filter(
         Notification.user_id == current_user.id,
