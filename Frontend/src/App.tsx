@@ -22,6 +22,7 @@ function App() {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [sessionExpired, setSessionExpired] = useState(false);
+  const [authLoading, setAuthLoading] = useState(() => Boolean(localStorage.getItem('token')));
 
   useEffect(() => {
     const handleSessionExpired = () => {
@@ -37,6 +38,7 @@ function App() {
       const token = localStorage.getItem('token');
       if (!token) {
         setCurrentUser(null);
+        setAuthLoading(false);
         return;
       }
       try {
@@ -48,10 +50,29 @@ function App() {
         localStorage.removeItem('token');
         localStorage.removeItem('user');
         setCurrentUser(null);
+      } finally {
+        setAuthLoading(false);
       }
     };
     initAuth();
   }, []);
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 p-6 md:p-10" role="status" aria-label="Restoring your session">
+        <div className="mx-auto max-w-5xl animate-pulse space-y-6">
+          <div className="h-12 w-56 rounded-xl bg-slate-200" />
+          <div className="grid gap-4 md:grid-cols-3">
+            <div className="h-28 rounded-2xl bg-white shadow-sm" />
+            <div className="h-28 rounded-2xl bg-white shadow-sm" />
+            <div className="h-28 rounded-2xl bg-white shadow-sm" />
+          </div>
+          <div className="h-72 rounded-2xl bg-white shadow-sm" />
+        </div>
+        <span className="sr-only">Restoring your session…</span>
+      </div>
+    );
+  }
 
   if (!currentUser) {
     return <LoginPage onLoginSuccess={(u) => { setSessionExpired(false); setCurrentUser(u); setCurrentTab('dashboard'); }} initialNotice={sessionExpired ? 'Session expired. Please sign in again.' : undefined} />;
@@ -127,10 +148,17 @@ function App() {
           searchTerm={searchTerm}
           onSearchChange={setSearchTerm}
           currentUser={currentUser}
+          currentTab={currentTab}
+          onLogout={() => {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            setCurrentUser(null);
+            setCurrentTab('login');
+          }}
         />
 
-        <main className="flex-1 p-6 md:p-8">
-          {renderContent()}
+        <main className="flex-1 min-w-0 px-4 py-5 pb-8 md:px-8 md:py-8">
+          <div className="mx-auto w-full max-w-[1600px]">{renderContent()}</div>
         </main>
       </div>
 

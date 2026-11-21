@@ -39,7 +39,11 @@ export default function BidderApp({ currentUser, onLogout }: BidderAppProps) {
       case 'bids':
         return <VerificationTable key={`bids-${refreshVersion}`} searchTerm={searchTerm} currentUser={currentUser} listMode="bids" />;
       case 'documents':
-        return <DocumentsTable key={`documents-${refreshVersion}`} searchTerm={searchTerm} />;
+        return <DocumentsTable
+          key={`documents-${refreshVersion}`}
+          searchTerm={searchTerm}
+          onStartBid={() => setCurrentTab('tenders')}
+        />;
       case 'alerts':
         return <BidderAlertsPage />;
       case 'support':
@@ -56,7 +60,11 @@ export default function BidderApp({ currentUser, onLogout }: BidderAppProps) {
       <BidderSidebar
         currentTab={currentTab}
         currentUser={currentUser}
-        onOpenNewBid={() => setIsModalOpen(true)}
+        onOpenNewBid={() => {
+          setSelectedTender(null);
+          setIsModalOpen(false);
+          setCurrentTab('tenders');
+        }}
         onTabChange={(tab) => {
           if (tab === 'logout') {
             onLogout();
@@ -65,14 +73,16 @@ export default function BidderApp({ currentUser, onLogout }: BidderAppProps) {
           }
         }}
       />
-      <div className="flex-1 flex flex-col h-screen overflow-hidden">
+      <div className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden">
         <Header 
           searchTerm={searchTerm} 
           onSearchChange={setSearchTerm} 
           currentUser={currentUser} 
+          currentTab={currentTab}
+          onLogout={onLogout}
         />
-        <main className="flex-1 overflow-y-auto p-6">
-          <div className="max-w-7xl mx-auto">
+        <main className="flex-1 overflow-y-auto px-4 py-5 pb-8 md:px-8 md:py-8">
+          <div className="mx-auto w-full max-w-[1440px]">
             {renderContent()}
           </div>
         </main>

@@ -35,7 +35,7 @@ import {
 import { formatINR } from '@/utils/formatINR';
 import { useTranslation } from '@/i18n';
 
-export default function VerificationTable({ searchTerm = '', currentUser, listMode = 'bids' }: { searchTerm?: string; currentUser?: any; listMode?: 'bids' | 'documents' }) {
+export default function VerificationTable({ searchTerm = '', currentUser, listMode = 'bids', onBrowseTenders }: { searchTerm?: string; currentUser?: any; listMode?: 'bids' | 'documents'; onBrowseTenders?: () => void }) {
   const { t } = useTranslation();
   const riskConfig: Record<'low' | 'medium' | 'high', { label: string; cls: string; icon: typeof ShieldCheck }> = {
     low: { label: t('lowRisk'), cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', icon: ShieldCheck },
@@ -65,6 +65,7 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
   const [actionReason, setActionReason] = useState<string>('');
   const [activeActionModal, setActiveActionModal] = useState<{ id: string; action: 'reject' | 'escalate' } | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
+  const [loadError, setLoadError] = useState('');
   const [uploadingDoc, setUploadingDoc] = useState<boolean>(false);
   const [operationMessage, setOperationMessage] = useState('');
   const [operationError, setOperationError] = useState('');
@@ -73,6 +74,7 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
 
   const loadBids = () => {
     setLoading(true);
+    setLoadError('');
     fetchBids({ search: searchTerm })
       .then((data) => {
         const filteredRecords = listMode === 'documents'
@@ -83,7 +85,10 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
           setExpandedId(filteredRecords[0].id);
         }
       })
-      .catch((err) => console.error(err))
+      .catch((err) => {
+        console.error(err);
+        setLoadError('Bids could not be loaded. Check your connection and retry.');
+      })
       .finally(() => setLoading(false));
   };
 
@@ -104,15 +109,15 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
     try {
       await approveBidApi(bidId, 'Compliance verified by procurement officer.');
       loadBids();
-    } catch (e) {
-      alert('Failed to approve bid');
+    } catch (err: any) {
+      setOperationError(err?.response?.data?.detail || 'Approval could not be saved. Please retry.');
     }
   };
 
   const submitActionWithReason = async () => {
     if (!activeActionModal) return;
     if (!actionReason.trim()) {
-      alert('Please enter a comment/reason for this decision');
+      setOperationError('Add an officer comment before confirming this decision.');
       return;
     }
     try {
@@ -124,8 +129,8 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
       setActiveActionModal(null);
       setActionReason('');
       loadBids();
-    } catch (e) {
-      alert('Failed to submit decision');
+    } catch (err: any) {
+      setOperationError(err?.response?.data?.detail || 'The decision could not be saved. Please retry.');
     }
   };
 
@@ -176,9 +181,44 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
     try {
       await downloadComplianceReportApi(bidId);
     } catch (err: any) {
-      alert(err?.response?.data?.detail || 'Failed to generate compliance report.');
+      setOperationError(err?.response?.data?.detail || 'The compliance report could not be generated. Please retry.');
     }
   };
+
+  if (loading && records.length === 0 && !loadError) {
+    return (
+      <div className="space-y-4" role="status" aria-label="Loading bids">
+        <div className="h-9 w-56 animate-pulse rounded-lg bg-slate-200" />
+        {[0, 1, 2].map((item) => <div key={item} className="h-24 animate-pulse rounded-2xl border border-slate-200 bg-white" />)}
+        <span className="sr-only">Loading bids…</span>
+      </div>
+    );
+  }
+
+  if (loadError && records.length === 0) {
+    return (
+      <section className="bs-card p-8 text-center" role="alert">
+        <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-rose-50 text-rose-700"><ShieldX className="h-6 w-6" /></div>
+        <h2 className="text-lg font-semibold text-slate-900">Could not load bids</h2>
+        <p className="mx-auto mt-1 max-w-md text-sm text-slate-600">{loadError}</p>
+        <button type="button" onClick={loadBids} className="bs-button-secondary mt-5"><RefreshCw className="h-4 w-4" /> {t('retry')}</button>
+      </section>
+    );
+  }
+
+  if (!loading && filteredRecords.length === 0) {
+    const isBidder = currentUser?.role === 'BIDDER';
+    return (
+      <section className="bs-card px-6 py-12 text-center md:px-10" aria-live="polite">
+        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-navy-50 text-navy-800"><FileText className="h-7 w-7" /></div>
+        <h2 className="text-lg font-semibold text-slate-900">{isBidder ? 'Your bid workspace is ready' : 'No bids in this view'}</h2>
+        <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-slate-600">
+          {isBidder ? 'Choose an active tender to create a bid. Its checklist will guide you through the required documents and verification.' : 'There are no bids matching the current search or queue filters.'}
+        </p>
+        {isBidder && onBrowseTenders && <button type="button" onClick={onBrowseTenders} className="bs-button-primary mt-5"><Upload className="h-4 w-4" /> Browse active tenders</button>}
+      </section>
+    );
+  }
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 overflow-hidden relative">
@@ -247,8 +287,9 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
         </div>
       )}
 
+      <div className="overflow-x-auto">
       {/* Column headers */}
-      <div className="grid grid-cols-[40px_1.5fr_1fr_1fr_1fr_120px_40px] gap-3 px-6 py-3 bg-slate-50 border-b border-slate-200 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+      <div className="grid min-w-[900px] grid-cols-[40px_1.5fr_1fr_1fr_1fr_120px_40px] gap-3 px-6 py-3 bg-slate-50 border-b border-slate-200 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
         <div></div>
         <div>{t('vendorColumn')}</div>
         <div>{t('categoryColumn')}</div>
@@ -258,7 +299,7 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
         <div></div>
       </div>
 
-      <div className="divide-y divide-slate-100">
+      <div className="min-w-[900px] divide-y divide-slate-100">
         {filteredRecords.map((rec) => {
           const isOpen = expandedId === rec.id;
           const risk = riskConfig[rec.riskLevel] || riskConfig.medium;
@@ -268,6 +309,7 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
             <div key={rec.id}>
               {/* Summary row */}
               <button
+                type="button"
                 onClick={() => toggle(rec.id)}
                 className={`w-full grid grid-cols-[40px_1.5fr_1fr_1fr_1fr_120px_40px] gap-3 px-6 py-4 items-center text-left transition-colors ${
                   isOpen ? 'bg-navy-50/50' : 'hover:bg-slate-50'
@@ -358,7 +400,13 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
                         <p className="text-[13px] text-slate-600 leading-relaxed mb-3">
                           {rec.aiRecommendation}
                         </p>
-                        <p className="text-[12px] text-slate-400 leading-relaxed">{rec.aiSummary}</p>
+                        {rec.ai_assessment?.officer_review_summary && (
+                          <div className="mb-3 rounded-lg border border-indigo-100 bg-indigo-50/60 p-3">
+                            <p className="text-[11px] font-bold uppercase tracking-wide text-indigo-800">Officer review summary</p>
+                            <p className="mt-1 text-[12px] leading-relaxed text-slate-700">{rec.ai_assessment.officer_review_summary}</p>
+                          </div>
+                        )}
+                        {!rec.ai_assessment && <p className="text-[12px] text-slate-400 leading-relaxed">{rec.aiSummary}</p>}
 
                         {rec.ai_assessment && (
                           <div className="mt-4 space-y-2" aria-label="AI compliance assessment">
@@ -376,9 +424,10 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
                             ))}
                             {rec.ai_assessment.discrepancies.map((item, index) => (
                               <div key={`discrepancy-${index}`} className="rounded-lg border border-orange-200 bg-orange-50/60 p-3 text-xs">
-                                <strong className="text-orange-800">Discrepancy · {item.document_name}</strong>
+                                <strong className="text-orange-800">{(item.kind || 'DISCREPANCY').replace(/_/g, ' ')}{item.document_name ? ` · ${item.document_name}` : ''}</strong>
                                 <p className="mt-1 text-slate-600">{item.description}</p>
-                                <p className="mt-1 text-slate-500">Evidence: “{item.evidence_quote}”</p>
+                                {item.evidence_quote && <p className="mt-1 text-slate-500">Evidence: “{item.evidence_quote}”</p>}
+                                {item.recommended_action && <p className="mt-1 font-medium text-slate-600">Next step: {item.recommended_action}</p>}
                               </div>
                             ))}
                             <p className="text-[11px] text-slate-400">AI provides decision support only. An authorized officer makes the final decision.</p>
@@ -512,9 +561,9 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         if (doc.id) {
-                                          viewDocumentApi(doc.id).catch(() => alert('Failed to open document.'));
+                                          viewDocumentApi(doc.id).catch(() => setOperationError('Document preview could not be opened.'));
                                         } else {
-                                          alert('Document ID is missing.');
+                                          setOperationError('This document is missing its reference. Refresh the bid and try again.');
                                         }
                                       }}
                                     >
@@ -554,7 +603,8 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
                                     type="button"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      if (doc.id) viewDocumentApi(doc.id).catch(() => alert('Failed to open document preview.'));
+                                      if (doc.id) viewDocumentApi(doc.id).catch(() => setOperationError('Document preview could not be opened.'));
+                                      else setOperationError('This document is missing its reference. Refresh the bid and try again.');
                                     }}
                                     className="text-[11px] font-semibold text-navy-700 hover:text-navy-900 flex items-center gap-1 hover:underline"
                                   >
@@ -565,7 +615,8 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
                                     type="button"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      if (doc.id) downloadDocumentApi(doc.id, doc.name).catch(() => alert('Failed to download document.'));
+                                      if (doc.id) downloadDocumentApi(doc.id, doc.name).catch(() => setOperationError('Document download could not be started.'));
+                                      else setOperationError('This document is missing its reference. Refresh the bid and try again.');
                                     }}
                                     className="text-[11px] font-semibold text-slate-600 hover:text-slate-800 flex items-center gap-1 hover:underline"
                                   >
@@ -659,6 +710,7 @@ export default function VerificationTable({ searchTerm = '', currentUser, listMo
             </div>
           );
         })}
+      </div>
       </div>
     </div>
   );

@@ -20,6 +20,9 @@ class DocumentExtraction(StrictOutput):
     vendor_name: str | None = None
     pan: str | None = None
     gstin: str | None = None
+    certificate_number: str | None = None
+    registration_number: str | None = None
+    registration_status: str | None = None
     valid_from: str | None = None
     valid_until: str | None = None
     document_type: str = Field(min_length=1, max_length=80)
@@ -48,9 +51,14 @@ class RequirementAssessment(StrictOutput):
 
 
 class ComplianceDiscrepancy(StrictOutput):
+    kind: Literal[
+        "MISSING_MANDATORY_DOCUMENT", "IDENTITY_MISMATCH", "VALUE_MISMATCH",
+        "VALIDITY", "UNVERIFIED_CLAIM", "UNREADABLE", "OTHER",
+    ] = "OTHER"
     description: str = Field(min_length=1, max_length=800)
-    evidence_quote: str = Field(min_length=1, max_length=800)
-    document_name: str = Field(min_length=1, max_length=240)
+    evidence_quote: str | None = Field(default=None, max_length=800)
+    document_name: str | None = Field(default=None, max_length=240)
+    recommended_action: str | None = Field(default=None, max_length=800)
 
 
 class ComplianceAssessment(StrictOutput):
@@ -151,8 +159,10 @@ class GeminiAIProvider:
 
     def extract_document(self, file_bytes: bytes, mime_type: str, expected_document_type: str | None = None) -> DocumentExtraction:
         prompt = (
-            "Extract only facts visibly supported by this document. Do not infer missing identifiers, names, "
-            "or dates. Return null for fields that are not present or legible. Dates must use YYYY-MM-DD. "
+            "Extract only facts visibly supported by this document: vendor/entity name, PAN, GSTIN, Udyam or "
+            "establishment identifiers, certificate/registration numbers and status, address, financial values, "
+            "experience, and validity or issue dates. Do not infer missing identifiers, names, status, or dates. "
+            "Return null for fields that are not present or legible. Dates must use YYYY-MM-DD. "
             "confidence_score is 0 to 100 and reflects the overall extraction certainty. "
             f"If supplied, use this requested document category as a hint, not as evidence: {expected_document_type or 'none'}."
         )
@@ -165,16 +175,27 @@ class GeminiAIProvider:
         prompt = (
             "Assess the attached bidder documents against every listed tender requirement. The supplied government "
             "verification results are MOCK signals, not authoritative evidence; do not claim they are live checks. "
-            "Use PASS only when the document evidence supports the requirement, FAIL only when evidence clearly "
-            "shows non-compliance, and WARNING when evidence is absent, unreadable, ambiguous, or needs officer review. "
-            "Evidence quotes must be short verbatim excerpts from an attached document. Do not invent quotes. "
-            "Return one requirement result for each requirement, a 0-100 risk_score, specific discrepancies with "
-            "document names and quotes, and a concise neutral officer_review_summary. Never recommend automatic approval or rejection.\n\n"
+            "Treat the supplied document inventory as the complete set of uploaded files for this bid. For an absent "
+            "mandatory document, return FAIL and a MISSING_MANDATORY_DOCUMENT discrepancy with no document name "
+            "and no evidence quote; the missing file itself is the evidence. For a present but unreadable, sparse, or "
+            "ambiguous document, return WARNING and request officer review instead of inferring facts. A document "
+            "marked extraction_warning is not sufficient evidence to pass a requirement. Use PASS only "
+            "when visible document evidence supports the requirement. Use FAIL for a clear identity, value, validity, "
+            "or other compliance conflict. Evidence quotes must be short, verbatim excerpts from the supplied files; "
+            "omit the quote when the discrepancy is an absent document. Never invent a name, identifier, date, quote, "
+            "or verification result. Return exactly one result per tender requirement, a 0-100 risk_score that reflects "
+            "the severity and number of unresolved issues, specific discrepancies with actionable recommended actions, "
+            "and a concise neutral officer_review_summary. Never recommend automatic approval or rejection.\n\n"
             f"Tender and requirements:\n{json.dumps(tender, ensure_ascii=False)}\n\n"
             f"Vendor profile and already extracted fields:\n{json.dumps(vendor, ensure_ascii=False)}\n\n"
             f"Mock external verification signals:\n{json.dumps(mock_verifications, ensure_ascii=False)}\n\n"
-            "Attached document labels and extracted fields are provided in order:\n"
-            + "\n".join(f"{doc['filename']}: {json.dumps(doc.get('fields', {}), ensure_ascii=False)}" for doc in documents)
+            "Complete uploaded document inventory and extracted fields are provided below. Read the attached bytes "
+            "in the same order and use document_type for coverage checks:\n"
+            + "\n".join(
+                f"{doc['filename']} (type={doc.get('document_type', 'UNKNOWN')}): "
+                f"{json.dumps(doc.get('fields', {}), ensure_ascii=False)}"
+                for doc in documents
+            )
         )
         parts = []
         for doc in documents:
@@ -187,7 +208,72 @@ class GeminiAIProvider:
                 "invalid_response",
                 "Gemini did not return exactly one assessment for every tender requirement.",
             )
-        return assessment
+        uploaded_types = {
+            str(doc.get("document_type") or (doc.get("fields") or {}).get("document_type") or "").strip().upper()
+            for doc in documents
+        }
+        documents_by_type: dict[str, list[dict]] = {}
+        for document in documents:
+            document_type = str(document.get("document_type") or (document.get("fields") or {}).get("document_type") or "").strip().upper()
+            documents_by_type.setdefault(document_type, []).append(document)
+        requirement_results = {
+            result.document_type.strip().upper(): result
+            for result in assessment.requirements
+        }
+        discrepancies = list(assessment.discrepancies)
+        enforced_results = []
+        missing_mandatory_count = 0
+        unreadable_count = 0
+        for requirement in tender.get("requirements", []):
+            document_type = str(requirement["document_type"]).strip().upper()
+            result = requirement_results[document_type]
+            if requirement.get("mandatory", requirement.get("is_mandatory", False)) and document_type not in uploaded_types:
+                missing_mandatory_count += 1
+                action = f"Upload the required {document_type} document, then rerun verification."
+                result = RequirementAssessment.model_validate({
+                    **result.model_dump(),
+                    "status": "FAIL",
+                    "finding": f"The mandatory {document_type} document was not uploaded for this bid.",
+                    "evidence_quote": None,
+                    "recommended_action": action,
+                })
+                already_reported = any(
+                    item.kind == "MISSING_MANDATORY_DOCUMENT"
+                    and item.document_name is None
+                    and document_type in item.description.upper()
+                    for item in discrepancies
+                )
+                if not already_reported:
+                    discrepancies.append(ComplianceDiscrepancy(
+                        kind="MISSING_MANDATORY_DOCUMENT",
+                        description=f"Mandatory {document_type} document is missing from the uploaded bid files.",
+                        recommended_action=action,
+                    ))
+            elif documents_by_type.get(document_type) and all(
+                document.get("extraction_warning") for document in documents_by_type[document_type]
+            ):
+                unreadable_count += 1
+                action = f"Upload a clearer {document_type} file, then rerun verification."
+                result = RequirementAssessment.model_validate({
+                    **result.model_dump(),
+                    "status": "WARNING",
+                    "finding": f"The uploaded {document_type} file did not yield legible facts with sufficient confidence; officer review is required.",
+                    "evidence_quote": None,
+                    "recommended_action": action,
+                })
+                if not any(item.kind == "UNREADABLE" and document_type in item.description.upper() for item in discrepancies):
+                    discrepancies.append(ComplianceDiscrepancy(
+                        kind="UNREADABLE",
+                        description=f"Uploaded {document_type} evidence is sparse or unreadable; its claims could not be confirmed.",
+                        recommended_action=action,
+                    ))
+            enforced_results.append(result)
+        return ComplianceAssessment.model_validate({
+            **assessment.model_dump(),
+            "risk_score": max(assessment.risk_score, min(100, missing_mandatory_count * 30), min(100, unreadable_count * 20)),
+            "requirements": [result.model_dump() for result in enforced_results],
+            "discrepancies": [item.model_dump() for item in discrepancies],
+        })
 
 
 def extracted_fields_for_document(result: DocumentExtraction) -> list[dict[str, str | float]]:
@@ -197,6 +283,9 @@ def extracted_fields_for_document(result: DocumentExtraction) -> list[dict[str, 
         "vendor_name": result.vendor_name,
         "pan": result.pan,
         "gstin": result.gstin,
+        "certificate_number": result.certificate_number,
+        "registration_number": result.registration_number,
+        "registration_status": result.registration_status,
         "valid_from": result.valid_from,
         "valid_until": result.valid_until,
         "udyam_number": result.udyam_number,

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { ShieldCheck, Lock, Mail, ArrowRight, Building2, User as UserIcon, CreditCard, FileCheck } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ShieldCheck, Lock, Mail, ArrowRight, Building2, User as UserIcon, CreditCard, FileCheck, Eye, EyeOff, LoaderCircle, AlertCircle } from 'lucide-react';
 import { loginApi, registerApi } from '@/services/api';
 import { LanguageSelector, useTranslation } from '@/i18n';
 
@@ -11,11 +11,13 @@ interface LoginPageProps {
 export default function LoginPage({ onLoginSuccess, initialNotice }: LoginPageProps) {
   const { t } = useTranslation();
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  
+
   // Login form state
-  const [email, setEmail] = useState('officer@bharatsetu.gov.in');
-  const [password, setPassword] = useState('officer123');
-  
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showRegistrationPassword, setShowRegistrationPassword] = useState(false);
+
   // Register form state
   const [regFullName, setRegFullName] = useState('');
   const [regCompanyName, setRegCompanyName] = useState('');
@@ -23,9 +25,19 @@ export default function LoginPage({ onLoginSuccess, initialNotice }: LoginPagePr
   const [regPassword, setRegPassword] = useState('');
   const [regPan, setRegPan] = useState('');
   const [regGstin, setRegGstin] = useState('');
-  
+
   const [loading, setLoading] = useState(false);
+  const [slowRequest, setSlowRequest] = useState(false);
   const [error, setError] = useState(initialNotice || '');
+
+  useEffect(() => {
+    if (!loading) {
+      setSlowRequest(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setSlowRequest(true), 4500);
+    return () => window.clearTimeout(timer);
+  }, [loading]);
 
   const setDemoCredentials = (role: 'officer' | 'bidder' | 'admin') => {
     setError('');
@@ -81,36 +93,39 @@ export default function LoginPage({ onLoginSuccess, initialNotice }: LoginPagePr
       localStorage.setItem('user', JSON.stringify(data.user));
       onLoginSuccess(data.user);
     } catch (err: any) {
-      setError(err?.response?.data?.detail || t('registrationFailed'));
+      const detail = err?.response?.data?.detail;
+      setError(typeof detail === 'string' ? detail : t('registrationFailed'));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 relative">
-      <div className="absolute right-5 top-5 rounded-lg bg-white/95 px-3 py-2 shadow">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#edf2f7] p-4 md:p-8">
+      <div className="pointer-events-none absolute -left-28 -top-32 h-96 w-96 rounded-full bg-blue-200/40 blur-3xl" />
+      <div className="pointer-events-none absolute -bottom-36 -right-24 h-[30rem] w-[30rem] rounded-full bg-slate-300/40 blur-3xl" />
+      <div className="absolute right-4 top-4 z-20 rounded-xl border border-slate-200 bg-white/90 px-3 py-2 shadow-sm md:right-8 md:top-8">
         <LanguageSelector />
       </div>
-      <div className="bg-white rounded-2xl max-w-lg w-full p-8 shadow-2xl border border-slate-200">
+      <div className="relative z-10 w-full max-w-[510px] rounded-3xl border border-white bg-white p-6 shadow-[0_24px_70px_-28px_rgba(15,43,72,0.28)] md:p-10">
         <div className="flex items-center gap-3 mb-6 justify-center">
-          <div className="w-12 h-12 rounded-xl bg-navy-600 flex items-center justify-center shadow-md">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-navy-900 shadow-md">
             <ShieldCheck className="w-7 h-7 text-white" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-slate-800">BharatSetu</h2>
-            <p className="text-xs text-navy-600 font-medium">GeM AI Bid Compliance Platform</p>
+            <h2 className="text-xl font-semibold tracking-tight text-slate-900">BharatSetu</h2>
+            <p className="text-xs font-medium text-slate-500">GeM bid compliance workspace</p>
           </div>
         </div>
 
         {/* Tab Switcher */}
-        <div className="flex bg-slate-100 p-1 rounded-xl mb-6">
+        <div className="mb-6 flex rounded-xl border border-slate-200 bg-slate-50 p-1">
           <button
             type="button"
             onClick={() => { setMode('login'); setError(''); }}
             className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
-              mode === 'login' 
-                ? 'bg-white text-navy-800 shadow-sm' 
+              mode === 'login'
+                ? 'bg-white text-navy-900 shadow-sm ring-1 ring-slate-200'
                 : 'text-slate-500 hover:text-slate-700'
             }`}
           >
@@ -120,8 +135,8 @@ export default function LoginPage({ onLoginSuccess, initialNotice }: LoginPagePr
             type="button"
             onClick={() => { setMode('register'); setError(''); }}
             className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
-              mode === 'register' 
-                ? 'bg-white text-navy-800 shadow-sm' 
+              mode === 'register'
+                ? 'bg-white text-navy-900 shadow-sm ring-1 ring-slate-200'
                 : 'text-slate-500 hover:text-slate-700'
             }`}
           >
@@ -133,58 +148,73 @@ export default function LoginPage({ onLoginSuccess, initialNotice }: LoginPagePr
           {mode === 'login' ? t('accessProcurementConsole') : t('newBidderRegistration')}
         </h3>
         <p className="text-xs text-slate-400 text-center mb-6">
-          {mode === 'login' 
+          {mode === 'login'
             ? t('signInAsRoles')
             : t('createVendorIdentity')}
         </p>
 
         {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-xs font-medium">
-            {error}
+          <div role="alert" className="mb-4 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm font-medium text-rose-800">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>{error}</span>
+          </div>
+        )}
+
+        {slowRequest && !error && (
+          <div role="status" className="mb-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+            <LoaderCircle className="mt-0.5 h-4 w-4 shrink-0 animate-spin" aria-hidden="true" />
+            <span>{t('backendWaking')}</span>
           </div>
         )}
 
         {mode === 'login' ? (
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase mb-1">{t('emailAddress')}</label>
+              <label htmlFor="login-email" className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-700">{t('emailAddress')}</label>
               <div className="relative">
                 <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="email"
+                  id="login-email"
+                  autoComplete="username"
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-navy-400"
+                  className="w-full rounded-xl border border-slate-300 bg-white py-3 pl-10 pr-4 text-sm text-slate-900 placeholder:text-slate-400 focus:border-navy-600 focus:bg-white focus:ring-2 focus:ring-navy-200"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase mb-1">{t('password')}</label>
+              <label htmlFor="login-password" className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-700">{t('password')}</label>
               <div className="relative">
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
+                  id="login-password"
+                  autoComplete="current-password"
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-navy-400"
+                  className="w-full rounded-xl border border-slate-300 bg-white py-3 pl-10 pr-12 text-sm text-slate-900 placeholder:text-slate-400 focus:border-navy-600 focus:ring-2 focus:ring-navy-200"
                 />
+                <button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? t('hidePassword') : t('showPassword')} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-800">
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
               </div>
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="w-full flex items-center justify-center gap-2 py-3 bg-navy-700 hover:bg-navy-800 text-white rounded-lg text-sm font-bold shadow-md transition-all disabled:opacity-50"
+              className="bs-button-primary w-full py-3.5"
             >
+              {loading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
               {loading ? t('authenticating') : t('signInToConsole')}
-              <ArrowRight className="w-4 h-4" />
             </button>
 
             {/* Quick Demo Credentials */}
-            <div className="mt-4 pt-4 border-t border-slate-100">
+            {import.meta.env.DEV && <div className="mt-5 border-t border-slate-100 pt-4">
               <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider text-center mb-2">{t('quickDemoAccess')}</p>
               <div className="grid grid-cols-3 gap-2">
                 <button
@@ -214,7 +244,7 @@ export default function LoginPage({ onLoginSuccess, initialNotice }: LoginPagePr
                 <span>{t('roleBidder')}</span>
                 <span>{t('roleAdmin')}</span>
               </div>
-            </div>
+            </div>}
           </form>
         ) : (
           <form onSubmit={handleRegister} className="space-y-3">
@@ -295,18 +325,23 @@ export default function LoginPage({ onLoginSuccess, initialNotice }: LoginPagePr
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase mb-1">{t('passwordMinimum')}</label>
+              <label htmlFor="registration-password" className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-700">{t('passwordMinimum')}</label>
               <div className="relative">
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
-                  type="password"
+                  type={showRegistrationPassword ? 'text' : 'password'}
+                  id="registration-password"
+                  autoComplete="new-password"
                   required
                   minLength={6}
                   placeholder="••••••••"
                   value={regPassword}
                   onChange={(e) => setRegPassword(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-navy-400"
+                  className="w-full rounded-xl border border-slate-300 bg-white py-3 pl-10 pr-12 text-sm focus:border-navy-600 focus:ring-2 focus:ring-navy-200"
                 />
+                <button type="button" onClick={() => setShowRegistrationPassword((value) => !value)} aria-label={showRegistrationPassword ? t('hidePassword') : t('showPassword')} className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-800">
+                  {showRegistrationPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
               </div>
             </div>
 

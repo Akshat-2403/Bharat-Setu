@@ -48,14 +48,14 @@ export default function BidderSidebar({ currentTab, onTabChange, onOpenNewBid, c
     logout: t('logout'),
   };
   return (
-    <aside className="w-64 bg-slate-900 text-white flex flex-col h-screen sticky top-0 shrink-0">
+    <aside className="sticky top-0 z-30 flex h-screen w-16 shrink-0 flex-col bg-slate-900 text-white md:w-64">
       {/* Logo */}
-      <div className="px-5 py-5 border-b border-white/10">
-        <div className="flex items-center gap-3">
+      <div className="border-b border-white/10 px-2 py-4 md:px-5 md:py-5">
+        <div className="flex items-center justify-center gap-3 md:justify-start">
           <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-indigo-500 to-indigo-700 flex items-center justify-center shadow-lg">
             <Building2 className="w-6 h-6 text-white" strokeWidth={2.2} />
           </div>
-          <div>
+          <div className="hidden md:block">
             <h1 className="font-bold text-[15px] leading-tight tracking-tight">BharatSetu</h1>
             <p className="text-[11px] text-indigo-300 font-medium">{t('bidderPortal')}</p>
           </div>
@@ -63,19 +63,22 @@ export default function BidderSidebar({ currentTab, onTabChange, onOpenNewBid, c
       </div>
 
       {/* New Bid Action */}
-      <div className="px-3 pt-4 pb-2">
+      <div className="px-2 pt-3 pb-2 md:px-3 md:pt-4">
         <button
           onClick={onOpenNewBid}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition-all shadow-md"
+          title={t('startBidUploadDocuments')}
+          aria-label={t('startBidUploadDocuments')}
+          className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-2 py-2.5 text-xs font-bold text-white shadow-md transition-all hover:bg-indigo-700 md:px-3"
         >
           <PlusCircle className="w-4 h-4" />
-          <span>{t('uploadDocuments')} / Bid</span>
+          <span className="hidden md:inline">{t('startBidUploadDocuments')}</span>
         </button>
+        <p className="hidden px-1 pt-2 text-[10px] leading-relaxed text-slate-400 md:block">{t('chooseTenderForDocuments')}</p>
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 px-3 py-2 overflow-y-auto scrollbar-navy">
-        <p className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+      <nav className="scrollbar-navy flex-1 overflow-y-auto px-2 py-2 md:px-3">
+        <p className="mb-2 hidden px-3 text-[10px] font-semibold uppercase tracking-wider text-slate-400 md:block">
           {t('vendorModules')}
         </p>
         <ul className="space-y-1">
@@ -85,14 +88,17 @@ export default function BidderSidebar({ currentTab, onTabChange, onOpenNewBid, c
               <li key={item.id}>
                 <button
                   onClick={() => onTabChange(item.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 group ${
+                  title={translatedLabels[item.id] || item.key}
+                  aria-label={translatedLabels[item.id] || item.key}
+                  aria-current={isActive ? 'page' : undefined}
+                  className={`group flex w-full items-center justify-center gap-3 rounded-lg px-2 py-3 text-sm font-medium transition-all duration-150 md:justify-start md:px-3 md:py-2.5 ${
                     isActive
                       ? 'bg-slate-800 text-white shadow-md border border-slate-700'
                       : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                   }`}
                 >
                   <item.icon className="w-[18px] h-[18px] shrink-0" strokeWidth={2} />
-                  <span className="flex-1 text-left">{translatedLabels[item.id] || item.key}</span>
+                  <span className="hidden flex-1 text-left md:inline">{translatedLabels[item.id] || item.key}</span>
                 </button>
               </li>
             );
@@ -101,34 +107,38 @@ export default function BidderSidebar({ currentTab, onTabChange, onOpenNewBid, c
       </nav>
 
       {/* Bottom */}
-      <div className="px-3 py-3 border-t border-white/10">
+      <div className="border-t border-white/10 px-2 py-3 md:px-3">
         <ul className="space-y-1">
           {bottomItems.map((item) => (
             <li key={item.id}>
               <button
                 onClick={() => onTabChange(item.id)}
-                className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-white transition-all duration-150"
+                title={translatedLabels[item.id] || item.key}
+                aria-label={translatedLabels[item.id] || item.key}
+                className="flex w-full items-center justify-center gap-3 rounded-lg px-2 py-3 text-sm font-medium text-slate-300 transition-all duration-150 hover:bg-slate-800 hover:text-white md:justify-start md:px-3 md:py-2"
               >
                 <item.icon className="w-[18px] h-[18px] shrink-0" strokeWidth={2} />
-                <span>{translatedLabels[item.id] || item.key}</span>
+                <span className="hidden md:inline">{translatedLabels[item.id] || item.key}</span>
               </button>
             </li>
           ))}
           <li>
             <button
                 onClick={() => onTabChange('logout')}
-                className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-slate-300 hover:bg-red-500/20 hover:text-red-400 transition-all duration-150"
+              title={t('logout')}
+              aria-label={t('logout')}
+              className="flex w-full items-center justify-center gap-3 rounded-lg px-2 py-3 text-sm font-medium text-slate-300 transition-all duration-150 hover:bg-red-500/20 hover:text-red-400 md:justify-start md:px-3 md:py-2"
               >
                 <LogOut className="w-[18px] h-[18px] shrink-0" strokeWidth={2} />
-                <span>{t('logout')}</span>
+                <span className="hidden md:inline">{t('logout')}</span>
             </button>
           </li>
         </ul>
       </div>
 
       {/* User card */}
-      <div className="px-3 pb-4">
-        <div className="bg-slate-800 rounded-xl p-3 flex items-center gap-3 border border-slate-700">
+      <div className="hidden px-3 pb-4 md:block">
+        <div className="flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-800 p-3">
           <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-400 to-indigo-600 flex items-center justify-center text-white font-bold text-sm shrink-0">
             {currentUser?.full_name?.charAt(0) || 'U'}
           </div>

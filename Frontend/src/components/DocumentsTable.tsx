@@ -11,7 +11,7 @@ const statusClass = (status: string) => {
   return 'bg-amber-50 text-amber-700 border-amber-200';
 };
 
-export default function DocumentsTable({ searchTerm = '' }: { searchTerm?: string }) {
+export default function DocumentsTable({ searchTerm = '', onStartBid }: { searchTerm?: string; onStartBid?: () => void }) {
   const { t } = useTranslation();
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [loading, setLoading] = useState(false);
@@ -129,7 +129,16 @@ export default function DocumentsTable({ searchTerm = '' }: { searchTerm?: strin
         <div className="px-6 py-16 text-center">
           <FileText className="w-10 h-10 mx-auto text-slate-300 mb-3" />
           <p className="text-sm font-semibold text-slate-700">{t('noDocumentsUploaded')}</p>
-          <p className="text-xs text-slate-400 mt-1">{t('uploadFromBid')}</p>
+          <p className="text-xs text-slate-500 mt-1">{t('chooseTenderForDocuments')}</p>
+          {onStartBid && (
+            <button
+              type="button"
+              onClick={onStartBid}
+              className="mt-4 inline-flex items-center rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700"
+            >
+              {t('browseTendersToUpload')}
+            </button>
+          )}
         </div>
       ) : (
         <div className="divide-y divide-slate-100">

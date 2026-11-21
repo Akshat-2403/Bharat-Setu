@@ -54,14 +54,20 @@ export interface BidRecord {
       recommended_action?: string | null;
     }[];
     risk_score: number;
-    discrepancies: { description: string; evidence_quote: string; document_name: string }[];
+    discrepancies: {
+      kind?: string;
+      description: string;
+      evidence_quote?: string | null;
+      document_name?: string | null;
+      recommended_action?: string | null;
+    }[];
     officer_review_summary: string;
   } | null;
   documents: {
     id: string;
     name: string;
     document_type?: string;
-    status: 'verified' | 'failed' | 'pending' | 'processing' | 'processing_failed' | 'manual_review_required';
+    status: 'verified' | 'failed' | 'pending' | 'processing' | 'processing_failed' | 'manual_review_required' | 'warning';
     source: string;
     detail: string;
     extracted_fields?: ExtractedFieldRecord[];

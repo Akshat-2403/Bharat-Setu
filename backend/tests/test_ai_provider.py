@@ -110,13 +110,72 @@ def test_gemini_returns_valid_compliance_assessment_for_each_requirement():
     })
     assessment = provider.assess_compliance(
         {"requirements": [{"document_type": "GST", "mandatory": True, "description": "Active GST registration"}]},
-        [{"filename": "gst.pdf", "mime_type": "application/pdf", "bytes": b"pdf", "fields": {"gstin": "27ABCDE1234F1Z5"}}],
+        [{"filename": "gst.pdf", "mime_type": "application/pdf", "document_type": "GST", "bytes": b"pdf", "fields": {"gstin": "27ABCDE1234F1Z5"}}],
         {"name": "Bharat Components Ltd"},
         [],
     )
     assert isinstance(assessment, ComplianceAssessment)
     assert assessment.risk_score == 12
     assert client.models.request["contents"][1]["inline_data"]["mime_type"] == "application/pdf"
+
+
+def test_gemini_assessment_marks_missing_mandatory_document_without_fabricated_quote():
+    provider, _ = make_provider({
+        "requirements": [{
+            "requirement": "Active GST registration",
+            "document_type": "GST",
+            "status": "PASS",
+            "finding": "GST registration is active.",
+            "evidence_quote": "Status: Active",
+            "recommended_action": "Confirm during review.",
+        }],
+        "risk_score": 5,
+        "discrepancies": [],
+        "officer_review_summary": "Review the bid evidence.",
+    })
+
+    assessment = provider.assess_compliance(
+        {"requirements": [{"document_type": "GST", "mandatory": True, "description": "Active GST registration"}]},
+        [],
+        {"name": "Bharat Components Ltd"},
+        [],
+    )
+
+    assert assessment.requirements[0].status == "FAIL"
+    assert assessment.requirements[0].evidence_quote is None
+    assert assessment.risk_score >= 30
+    assert assessment.discrepancies[0].kind == "MISSING_MANDATORY_DOCUMENT"
+    assert assessment.discrepancies[0].evidence_quote is None
+    assert assessment.discrepancies[0].recommended_action
+
+
+def test_gemini_assessment_downgrades_sparse_document_to_warning():
+    provider, _ = make_provider({
+        "requirements": [{
+            "requirement": "Active GST registration",
+            "document_type": "GST",
+            "status": "PASS",
+            "finding": "The uploaded file supports the requirement.",
+            "evidence_quote": "Active",
+            "recommended_action": "Confirm during review.",
+        }],
+        "risk_score": 0,
+        "discrepancies": [],
+        "officer_review_summary": "Review the evidence.",
+    })
+
+    assessment = provider.assess_compliance(
+        {"requirements": [{"document_type": "GST", "mandatory": True}]},
+        [{"filename": "sparse.pdf", "document_type": "GST", "extraction_warning": True,
+          "mime_type": "application/pdf", "bytes": b"pdf", "fields": {}}],
+        {},
+        [],
+    )
+
+    assert assessment.requirements[0].status == "WARNING"
+    assert assessment.requirements[0].evidence_quote is None
+    assert assessment.risk_score >= 20
+    assert assessment.discrepancies[0].kind == "UNREADABLE"
 
 
 def test_gemini_rejects_assessment_missing_tender_requirement():

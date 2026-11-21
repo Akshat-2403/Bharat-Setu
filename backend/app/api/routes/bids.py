@@ -353,6 +353,8 @@ def execute_bid_verification_pipeline(bid_id: str, db: Session):
                 mime_type = mimetypes.guess_type(document.filename)[0] or "application/octet-stream"
                 ai_documents.append({
                     "filename": document.filename,
+                    "document_type": document.document_type,
+                    "extraction_warning": document.document_status.upper() == "WARNING",
                     "mime_type": mime_type,
                     "bytes": storage.download_bytes(document.storage_key),
                     "fields": {field.field_name: field.field_value for field in document.extracted_fields},
@@ -793,6 +795,7 @@ def upload_document(
 
     is_gemini = settings.LLM_PROVIDER == "gemini"
     gemini_doc = None
+    extraction_uncertain = False
     if is_gemini:
         gemini_doc = Document(
             bid_id=bid.id,
@@ -838,6 +841,11 @@ def upload_document(
         extracted_text = None
         ocr_conf = extraction.confidence_score
         class_conf = extraction.confidence_score
+        extracted_facts = [
+            value for name, value in extraction.model_dump().items()
+            if name not in {"document_type", "confidence_score"} and value is not None
+        ]
+        extraction_uncertain = extraction.confidence_score < 50 or not extracted_facts
         classified_doc_type = extraction.document_type
         extracted_fields = extracted_fields_for_document(extraction)
     else:
@@ -921,14 +929,16 @@ def upload_document(
     doc.document_type = doc_type
     doc.extracted_text = extracted_text
     doc.ocr_confidence = ocr_conf
-    doc.document_status = "FAILED" if consistency_issues else "UPLOADED"
-    doc.verification_status = "MANUAL_REVIEW_REQUIRED" if consistency_issues else "PENDING"
+    doc.document_status = "FAILED" if consistency_issues else "WARNING" if extraction_uncertain else "UPLOADED"
+    doc.verification_status = "MANUAL_REVIEW_REQUIRED" if consistency_issues or extraction_uncertain else "PENDING"
     if not is_gemini:
         doc.source = "OCR Engine"
         db.add(doc)
     doc.detail = f"{extraction_state}; classified as {doc_type} ({class_conf:.0f}% confidence)."
     if consistency_issues:
         doc.detail += f" {' '.join(consistency_issues)}"
+    if extraction_uncertain:
+        doc.detail += " MANUAL_REVIEW_REQUIRED: Gemini could not extract legible business facts with sufficient confidence; no missing values were inferred."
     db.commit()
     db.refresh(doc)
 
