@@ -555,8 +555,8 @@ def test_document_missing_file_and_traversal_are_handled_gracefully(db: Session,
     db.commit()
 
     missing_res = client.get(f"/api/bids/documents/{missing_doc.id}/view", headers=headers)
-    assert missing_res.status_code == 404
-    assert "Document unavailable" in missing_res.json()["detail"]
+    assert missing_res.status_code == 404, missing_res.text
+    assert missing_res.json()["detail"] == "File not found in storage"
 
     traversal_doc = Document(
         bid_id=bid.id,
@@ -570,5 +570,5 @@ def test_document_missing_file_and_traversal_are_handled_gracefully(db: Session,
     db.commit()
 
     traversal_res = client.get(f"/api/bids/documents/{traversal_doc.id}/view", headers=headers)
-    assert traversal_res.status_code in {403, 404}
-    assert "Document unavailable" in traversal_res.json()["detail"] or "not allowed" in traversal_res.json()["detail"].lower()
+    assert traversal_res.status_code == 404, traversal_res.text
+    assert traversal_res.json()["detail"] == "File not found in storage"
