@@ -133,6 +133,11 @@ export const loginApi = async (email: string, password: string) => {
   return res.data;
 };
 
+export const demoLoginApi = async (role: 'bidder' | 'officer' | 'admin') => {
+  const res = await api.post('/auth/demo-login', { role });
+  return res.data;
+};
+
 export const registerApi = async (data: {
   email: string;
   password: string;

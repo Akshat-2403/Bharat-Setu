@@ -11,7 +11,7 @@ class AuthRateLimitMiddleware(BaseHTTPMiddleware):
 
     WINDOW_SECONDS = 60
     MAX_ATTEMPTS = 10
-    PATHS = {"/api/auth/login", "/api/auth/register"}
+    PATHS = {"/api/auth/login", "/api/auth/register", "/api/auth/demo-login"}
 
     def __init__(self, app):
         super().__init__(app)
@@ -46,7 +46,10 @@ class AuthRateLimitMiddleware(BaseHTTPMiddleware):
                     )
 
         response = await call_next(request)
-        if request.method == "POST" and request.url.path in self.PATHS and response.status_code in {400, 401, 422}:
+        count_attempt = response.status_code in {400, 401, 422} or (
+            request.url.path == "/api/auth/demo-login" and response.status_code < 500
+        )
+        if request.method == "POST" and request.url.path in self.PATHS and count_attempt:
             with self._lock:
                 attempts = self._attempts[key]
                 while attempts and now - attempts[0] >= self.WINDOW_SECONDS:

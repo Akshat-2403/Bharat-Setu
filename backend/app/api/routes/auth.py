@@ -1,15 +1,37 @@
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.models import User, Vendor
 from app.schemas.schemas import LoginRequest, RegisterRequest, Token, UserResponse
+from app.core.config import settings
 from app.core.security import verify_password, get_password_hash, create_access_token, require_role
+from app.services.demo_auth import DEMO_ACCOUNTS, ensure_demo_user
 from app.services.validation.validators import validate_entity_name, validate_gstin, validate_pan, validate_udyam, validate_phone
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 logger = logging.getLogger(__name__)
+
+
+class DemoLoginRequest(BaseModel):
+    role: Literal["bidder", "officer", "admin"]
+
+
+def _token_for_user(user: User) -> dict:
+    return {
+        "access_token": create_access_token(subject=user.id),
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": user.role,
+            "department": user.department,
+        },
+    }
 
 @router.post("/login", response_model=Token)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
@@ -22,18 +44,22 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         )
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password", headers={"WWW-Authenticate": "Bearer"})
-    token = create_access_token(subject=user.id)
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "email": user.email,
-            "full_name": user.full_name,
-            "role": user.role,
-            "department": user.department
-        }
-    }
+    return _token_for_user(user)
+
+
+@router.post("/demo-login", response_model=Token)
+def demo_login(payload: DemoLoginRequest, db: Session = Depends(get_db)):
+    if not settings.ENABLE_DEMO_LOGIN:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    user = ensure_demo_user(payload.role, db)
+    account = DEMO_ACCOUNTS[payload.role]
+    if (
+        not user.is_active
+        or user.role != account["role"]
+        or not verify_password(account["password"], user.hashed_password)
+    ):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This demo account is unavailable or its credentials were changed.")
+    return _token_for_user(user)
 
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 def register(payload: RegisterRequest, db: Session = Depends(get_db)):

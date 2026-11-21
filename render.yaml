@@ -21,6 +21,8 @@ services:
         sync: false
       - key: ENABLE_DEMO_SEED
         value: "false"
+      - key: ENABLE_DEMO_LOGIN
+        value: "false"
       - key: VERIFICATION_MODE
         value: mock
       - key: LLM_PROVIDER

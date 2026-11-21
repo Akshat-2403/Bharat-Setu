@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     GEMINI_TIMEOUT_SECONDS: int = Field(default=60, ge=1, le=300)
     OCR_ENABLED: bool = True
     ENABLE_DEMO_SEED: bool = False
+    ENABLE_DEMO_LOGIN: bool = False
 
     EMAIL_NOTIFICATIONS_ENABLED: bool = False
     SMTP_HOST: str = ""

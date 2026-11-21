@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { ShieldCheck, Lock, Mail, ArrowRight, Building2, User as UserIcon, CreditCard, FileCheck, Eye, EyeOff, LoaderCircle, AlertCircle } from 'lucide-react';
-import { loginApi, registerApi } from '@/services/api';
+import { ShieldCheck, Lock, Mail, ArrowRight, Building2, User as UserIcon, CreditCard, FileCheck, Eye, EyeOff, LoaderCircle, AlertCircle, Sparkles } from 'lucide-react';
+import { demoLoginApi, loginApi, registerApi } from '@/services/api';
 import { LanguageSelector, useTranslation } from '@/i18n';
 
 interface LoginPageProps {
@@ -17,6 +17,7 @@ export default function LoginPage({ onLoginSuccess, initialNotice }: LoginPagePr
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showRegistrationPassword, setShowRegistrationPassword] = useState(false);
+  const [showDemoOptions, setShowDemoOptions] = useState(false);
 
   // Register form state
   const [regFullName, setRegFullName] = useState('');
@@ -39,18 +40,10 @@ export default function LoginPage({ onLoginSuccess, initialNotice }: LoginPagePr
     return () => window.clearTimeout(timer);
   }, [loading]);
 
-  const setDemoCredentials = (role: 'officer' | 'bidder' | 'admin') => {
-    setError('');
-    if (role === 'officer') {
-      setEmail('officer@bharatsetu.gov.in');
-      setPassword('officer123');
-    } else if (role === 'bidder') {
-      setEmail('bidder@bharatsetu.gov.in');
-      setPassword('bidder123');
-    } else {
-      setEmail('admin@bharatsetu.gov.in');
-      setPassword('admin123');
-    }
+  const storeSession = (data: any) => {
+    localStorage.setItem('token', data.access_token);
+    localStorage.setItem('user', JSON.stringify(data.user));
+    onLoginSuccess(data.user);
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -59,9 +52,7 @@ export default function LoginPage({ onLoginSuccess, initialNotice }: LoginPagePr
     setError('');
     try {
       const data = await loginApi(email, password);
-      localStorage.setItem('token', data.access_token);
-      localStorage.setItem('user', JSON.stringify(data.user));
-      onLoginSuccess(data.user);
+      storeSession(data);
     } catch (err: any) {
       const detail = err?.response?.data?.detail;
       if (!err?.response || err.response.status >= 500) {
@@ -71,6 +62,20 @@ export default function LoginPage({ onLoginSuccess, initialNotice }: LoginPagePr
       } else {
         setError(typeof detail === 'string' ? detail : t('backendUnavailable'));
       }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDemoLogin = async (role: 'bidder' | 'officer' | 'admin') => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await demoLoginApi(role);
+      storeSession(data);
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      setError(typeof detail === 'string' ? detail : t('backendUnavailable'));
     } finally {
       setLoading(false);
     }
@@ -168,6 +173,7 @@ export default function LoginPage({ onLoginSuccess, initialNotice }: LoginPagePr
         )}
 
         {mode === 'login' ? (
+          <>
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <label htmlFor="login-email" className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-700">{t('emailAddress')}</label>
@@ -213,39 +219,43 @@ export default function LoginPage({ onLoginSuccess, initialNotice }: LoginPagePr
               {loading ? t('authenticating') : t('signInToConsole')}
             </button>
 
-            {/* Quick Demo Credentials */}
-            {import.meta.env.DEV && <div className="mt-5 border-t border-slate-100 pt-4">
-              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider text-center mb-2">{t('quickDemoAccess')}</p>
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setDemoCredentials('officer')}
-                  className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs font-semibold"
-                >
-                  {t('officer')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDemoCredentials('bidder')}
-                  className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs font-semibold"
-                >
-                  {t('bidder')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDemoCredentials('admin')}
-                  className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs font-semibold"
-                >
-                  {t('admin')}
-                </button>
-              </div>
-              <div className="mt-3 grid grid-cols-3 gap-2 text-center text-[10px] text-slate-500">
-                <span>{t('roleOfficer')}</span>
-                <span>{t('roleBidder')}</span>
-                <span>{t('roleAdmin')}</span>
-              </div>
-            </div>}
           </form>
+          {import.meta.env.VITE_ENABLE_DEMO_LOGIN === 'true' && (
+            <section className="mt-5 border-t border-slate-100 pt-4" aria-label={t('quickTestingAccess')}>
+              <p className="mb-2 text-center text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">{t('quickTestingAccess')}</p>
+              <button
+                type="button"
+                onClick={() => setShowDemoOptions((open) => !open)}
+                aria-expanded={showDemoOptions}
+                aria-controls="demo-role-options"
+                disabled={loading}
+                className="bs-button-secondary w-full justify-center"
+              >
+                <Sparkles className="h-4 w-4 text-navy-700" /> {t('demoLogin')}
+              </button>
+              {showDemoOptions && (
+                <div id="demo-role-options" className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  {([
+                    { role: 'bidder', label: t('bidder'), description: t('roleBidder') },
+                    { role: 'officer', label: t('officer'), description: t('roleOfficer') },
+                    { role: 'admin', label: t('admin'), description: t('roleAdmin') },
+                  ] as const).map((option) => (
+                    <button
+                      key={option.role}
+                      type="button"
+                      disabled={loading}
+                      onClick={() => void handleDemoLogin(option.role)}
+                      className="rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-navy-300 hover:bg-navy-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy-500 disabled:opacity-50"
+                    >
+                      <span className="block text-sm font-semibold text-slate-800">{loading ? t('authenticating') : option.label}</span>
+                      <span className="mt-1 block text-[11px] leading-4 text-slate-500">{option.description}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+          </>
         ) : (
           <form onSubmit={handleRegister} className="space-y-3">
             <div>
