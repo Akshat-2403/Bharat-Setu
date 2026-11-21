@@ -512,8 +512,10 @@ def test_document_viewer_pdf_security_and_magic_bytes(db: Session, tmp_path, mon
 def test_document_missing_file_and_traversal_are_handled_gracefully(db: Session, tmp_path, monkeypatch):
     uid = str(uuid.uuid4())[:8]
     vendor = Vendor(name=f"Vendor {uid}")
+    db.add(vendor)
+    db.flush()
     bidder = User(email=f"bidder_{uid}@test.com", hashed_password="pwd", full_name="Bidder", role="BIDDER", vendor_id=vendor.id)
-    db.add_all([vendor, bidder])
+    db.add(bidder)
     db.commit()
 
     tender = Tender(title=f"Tender {uid}", tender_id=f"T-{uid}", department="CPCL", category="Machinery", bid_deadline="2026-12-31", estimated_value=200000.0)

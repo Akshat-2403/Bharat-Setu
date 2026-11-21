@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime, timedelta
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -17,6 +18,13 @@ def setup_database():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     seed_db()
+    # The seeded sample tender has a fixed demo deadline that eventually falls
+    # into the past. Keep this workflow fixture eligible as the calendar moves.
+    with SessionLocal() as session:
+        tender = session.query(Tender).filter(Tender.tender_id == "CPCL-2026-IND-09").first()
+        if tender:
+            tender.bid_deadline = (datetime.utcnow().date() + timedelta(days=30)).isoformat()
+            session.commit()
 
 @pytest.fixture
 def db():
@@ -31,6 +39,14 @@ def get_bidder_auth(email="bidder@bharatsetu.gov.in"):
 def get_officer_auth():
     res = client.post("/api/auth/login", json={"email": "officer@bharatsetu.gov.in", "password": "officer123"})
     return {"Authorization": f"Bearer {res.json()['access_token']}"}
+
+
+def created_bid_id(response):
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result.get("id"), result
+    return result["id"]
+
 
 def test_valid_document_verification(db: Session):
     bidder_headers = get_bidder_auth()
@@ -47,7 +63,7 @@ def test_valid_document_verification(db: Session):
         "pan": "ABCDE1234F",
         "udyam": "UDYAM-MH-00-1234567"
     }, headers=bidder_headers)
-    bid_id = res.json()["id"]
+    bid_id = created_bid_id(res)
 
     # Test 1: Upload valid document
     with patch("app.api.routes.bids.OCRService.process_file") as mock_ocr, \
@@ -116,7 +132,7 @@ def test_invalid_document_no_fallback(db: Session):
         "pan": "ABCDE1234F",
         "udyam": "UDYAM-MH-00-1234567"
     }, headers=bidder_headers)
-    bid_id = res.json()["id"]
+    bid_id = created_bid_id(res)
 
     # Test 2: Unrelated document - should NOT verify through fallback
     with patch("app.api.routes.bids.OCRService.process_file") as mock_ocr, \
@@ -162,7 +178,7 @@ def test_mismatched_identity_verification(db: Session):
         "pan": "VWXYZ5678G",
         "udyam": "UDYAM-DL-11-7654321"
     }, headers=bidder_headers)
-    bid_id = res.json()["id"]
+    bid_id = created_bid_id(res)
 
     # Test 4: Mismatched identity field
     with patch("app.api.routes.bids.OCRService.process_file") as mock_ocr, \
@@ -197,7 +213,7 @@ def test_missing_mandatory_document_alert(db: Session):
         "category": "Industrial Machinery",
         "bid_amount": "1000"
     }, headers=bidder_headers)
-    bid_id = res.json()["id"]
+    bid_id = created_bid_id(res)
 
     # We don't upload GST. It's mandatory.
     client.post(f"/api/bids/{bid_id}/verify", headers=bidder_headers)
